@@ -1,0 +1,28 @@
+# Track only: src/, requirements.txt, diagram/
+
+# Ignore everything
+*
+
+!.gitignore
+
+# Unignore tracked paths
+!src/
+!src/**
+!requirements.txt
+!diagram/
+!diagram/**
+
+# Always ignore cache/compiled
+src/**/__pycache__/
+src/**/*.pyc
+src/**/*.pyo
+src/**/*.pyd
+
+
+
+# vscode Settings
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
