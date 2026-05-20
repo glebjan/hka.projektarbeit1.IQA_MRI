@@ -1,0 +1,91 @@
+flowchart TD
+    INPUT(["📥 INPUT\nSynthetisches MRT-Lungenbild"])
+
+    INPUT --> PAIR{{"Echtes Paar\nvorhanden?"}}
+
+    %% ─── PAIRED BRANCH ───────────────────────────────────────
+    PAIR -- "✅ Ja (Paired)" --> FR
+
+    subgraph FR["🔵 Full-Reference Metriken  —  Pixelweise Ähnlichkeit"]
+        direction LR
+        SSIM["SSIM\nStrukturelle Ähnlichkeit\n(Luminanz · Kontrast · Struktur)"]
+        PSNR["PSNR\nSignal-Rausch-Verhältnis\n(Pixelfehler-basiert)"]
+        LPIPS["LPIPS\nLernbasierte perzeptuelle\nÄhnlichkeit im Feature-Space"]
+        DISTS["DISTS\nStruktur & Textur\nÄhnlichkeit (robust gg. Shift)"]
+    end
+
+    FR --> FR_WARN["⚠️ Dohmen 2024: SSIM & PSNR\nnicht sensitiv für alle MRT-Artefakte\n→ LPIPS & DISTS als Ergänzung nötig"]
+
+    %% ─── UNPAIRED BRANCH ──────────────────────────────────────
+    PAIR -- "❌ Nein (Unpaired)" --> NR
+
+    subgraph NR["🟣 No-Reference Metriken  —  Kein Paar nötig"]
+        direction LR
+        CLIPIQA["CLIP-IQA\nWahrnehmungsqualität\n'Sharp MRI.' vs 'Blurry MRI.'\n(Schärfe · Rauschen · Helligkeit)"]
+        BRISQUE["BRISQUE\nStatistisches Rausch-\nund Schärfemodell"]
+        NIQE["NIQE\nNatürliche Bildstatistik\n(Blind Quality Estimator)"]
+    end
+
+    NR --> NR_WARN["⚠️ Rocafort 2025: No-Reference-Metriken\n≠ anatomische Korrektheit\n→ immer mit Downstream kombinieren"]
+
+    %% ─── DISTRIBUTION BRANCH (optional) ──────────────────────
+    PAIR -- "❌ Nein + echte\nBilder als Menge" --> DIST
+
+    subgraph DIST["🔵 Verteilungsmetriken  —  Menge synth. vs. Menge echt"]
+        direction LR
+        KID["KID\nKernel Inception Distance\n(unbiased, stabil bei kleinem N)"]
+        PRDC["PRDC\nPrecision · Recall\nDiversity · Coverage\n(Recall = Mode-Collapse-Signal)"]
+    end
+
+    DIST --> DIST_WARN["⚠️ Deo 2025: KID kann\nMemorization verschleiern\n→ mit AuthPct + Recall kombinieren"]
+
+    %% ─── ALLE PFADE → DOWNSTREAM ──────────────────────────────
+    FR_WARN --> DS
+    NR_WARN --> DS
+    DIST_WARN --> DS
+
+    subgraph DS["🟢 Downstream  —  Anatomische Korrektheit  (immer ausführen)"]
+        direction TB
+        SEG["Vortrainierter U-Net\nLungensegmentierung\n(z.B. LUNA16 / MSD Task06)"]
+        SEG --> GT_CHECK{{"GT-Maske\nvorhanden?"}}
+
+        GT_CHECK -- "✅ Ja" --> DICE["Dice / IoU\nDirekte Maskenüberlappung\nmit Ground Truth"]
+
+        GT_CHECK -- "❌ Nein" --> SENBI["Evanyseg Score\n(Senbi et al.)\nRegression schätzt Dice\nohne Ground Truth"]
+
+        GT_CHECK -- "❌ Nein +\nkein Regressionsmodell" --> SHAPE["Anatomische\nPlausibilitätsprüfung\n• Lungenvolumen im Normbereich?\n• Links-Rechts-Symmetrie?\n• 2 zusammenh. Komponenten?\n• Kompaktheit der Maske?"]
+    end
+
+    %% ─── OUTPUT ───────────────────────────────────────────────
+    DICE --> OUT
+    SENBI --> OUT
+    SHAPE --> OUT
+    DS --> OUT
+
+    OUT(["📊 OUTPUT\nMultidimensionaler Qualitätsbericht\n─────────────────────────────────\n• Bildqualität-Score (NR / FR)\n• Verteilungsähnlichkeit (KID / PRDC)\n• Anatomische Korrektheit (Dice / Evanyseg / Shape)\n─────────────────────────────────\nDeo 2025: Kein Einzelscore genügt —\nnur multifaktorielle Bewertung ist valide"])
+
+    %% ─── STYLING ──────────────────────────────────────────────
+    style INPUT fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style PAIR fill:#1e293b,stroke:#475569,color:#e2e8f0
+    style FR fill:#172554,stroke:#2563eb,color:#93c5fd
+    style SSIM fill:#0f172a,stroke:#2563eb,color:#60a5fa
+    style PSNR fill:#0f172a,stroke:#2563eb,color:#60a5fa
+    style LPIPS fill:#0f172a,stroke:#2563eb,color:#60a5fa
+    style DISTS fill:#0f172a,stroke:#2563eb,color:#60a5fa
+    style FR_WARN fill:#292524,stroke:#78350f,color:#fbbf24
+    style NR fill:#2e1065,stroke:#8b5cf6,color:#c4b5fd
+    style CLIPIQA fill:#1e1040,stroke:#7c3aed,color:#a78bfa
+    style BRISQUE fill:#1e1040,stroke:#7c3aed,color:#a78bfa
+    style NIQE fill:#1e1040,stroke:#7c3aed,color:#a78bfa
+    style NR_WARN fill:#292524,stroke:#78350f,color:#fbbf24
+    style DIST fill:#172554,stroke:#2563eb,color:#93c5fd
+    style KID fill:#0f172a,stroke:#2563eb,color:#60a5fa
+    style PRDC fill:#0f172a,stroke:#2563eb,color:#60a5fa
+    style DIST_WARN fill:#292524,stroke:#78350f,color:#fbbf24
+    style DS fill:#052e16,stroke:#10b981,color:#6ee7b7
+    style SEG fill:#021d0f,stroke:#059669,color:#34d399
+    style GT_CHECK fill:#1e293b,stroke:#475569,color:#e2e8f0
+    style DICE fill:#021d0f,stroke:#059669,color:#34d399
+    style SENBI fill:#021d0f,stroke:#059669,color:#34d399
+    style SHAPE fill:#021d0f,stroke:#059669,color:#34d399
+    style OUT fill:#1c1917,stroke:#f59e0b,color:#fbbf24
