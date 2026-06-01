@@ -2,43 +2,57 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Callable, Optional
 
+import nibabel as nib
 import numpy as np
 import pandas as pd
-import pyiqa
 import pydicom
+import pyiqa
+import SimpleITK as sitk
 import torch
 from PIL import Image
-from torchvision import transforms
+
+from constants import INPUT, TARGET
 
 
-# ---------- image loading ----------
+# ---------- tensor helper ----------
 
-SUPPORTED_SUFFIXES = {".png", ".dcm"}
+def _to_tensor(arr_dhw: np.ndarray) -> torch.Tensor:
+    """(D, H, W) ndarray -> (D, 1, H, W) float32 tensor min-max normalized to [0, 1]."""
+    arr = arr_dhw.astype(np.float32)
+    lo, hi = float(arr.min()), float(arr.max())
+    arr = (arr - lo) / (hi - lo + 1e-8) if hi > lo else np.zeros_like(arr)
+    return torch.from_numpy(arr).unsqueeze(1)
 
 
-def _select_dicom_frame(arr: np.ndarray, photometric: str) -> np.ndarray:
-    """Reduce pydicom pixel_array to 2D grayscale or HxWx3 RGB."""
+# ---------- format loaders ----------
+
+def _load_pil(path: Path) -> torch.Tensor:
+    img = Image.open(path).convert("L")
+    arr = np.asarray(img)[None, ...]  # (1, H, W)
+    return _to_tensor(arr)
+
+
+def _select_dicom_frames(arr: np.ndarray, photometric: str) -> np.ndarray:
+    """Reduce pydicom pixel_array to (D, H, W). RGB planes collapsed to luminance."""
     arr = np.squeeze(arr)
 
     if arr.ndim == 2:
-        return arr
+        return arr[None, ...]
 
     if arr.ndim == 3:
-        # RGB plane last: (H, W, 3|4)
         if arr.shape[-1] in (3, 4) and photometric.startswith("RGB"):
-            return arr[..., :3]
-        # Multi-frame stack: (frames, H, W) -> middle frame
-        if arr.shape[0] > 1 and arr.shape[-1] not in (3, 4):
-            return arr[arr.shape[0] // 2]
+            rgb = arr[..., :3].astype(np.float32)
+            lum = (0.2989 * rgb[..., 0] + 0.5870 * rgb[..., 1] + 0.1140 * rgb[..., 2])
+            return lum[None, ...]
+        return arr  # (D, H, W) multi-frame stack
 
     raise ValueError(f"Unsupported DICOM pixel_array shape {arr.shape}")
 
 
-def _load_dicom(path: Path) -> Image.Image:
-    """DICOM -> PIL.Image, windowed via slope/intercept, normalized to uint8."""
+def _load_dicom(path: Path) -> torch.Tensor:
     ds = pydicom.dcmread(str(path))
     photometric = str(getattr(ds, "PhotometricInterpretation", "MONOCHROME2"))
-    arr = _select_dicom_frame(ds.pixel_array, photometric).astype(np.float32)
+    arr = _select_dicom_frames(ds.pixel_array, photometric).astype(np.float32)
 
     slope = float(getattr(ds, "RescaleSlope", 1.0) or 1.0)
     intercept = float(getattr(ds, "RescaleIntercept", 0.0) or 0.0)
@@ -47,47 +61,92 @@ def _load_dicom(path: Path) -> Image.Image:
     if photometric == "MONOCHROME1":
         arr = arr.max() - arr
 
-    lo, hi = float(arr.min()), float(arr.max())
-    if hi > lo:
-        arr = (arr - lo) / (hi - lo) * 255.0
+    return _to_tensor(arr)
+
+
+def _load_nifti(path: Path) -> torch.Tensor:
+    img = nib.as_closest_canonical(nib.load(str(path)))
+    data = img.get_fdata()  # (H, W, D) or (H, W, D, T)
+    if data.ndim == 3:
+        arr = np.transpose(data, (2, 0, 1))  # (D, H, W)
+    elif data.ndim == 4:
+        # (H, W, D, T) -> (T, D, H, W) -> flatten to (T*D, H, W)
+        arr = np.transpose(data, (3, 2, 0, 1)).reshape(-1, data.shape[0], data.shape[1])
     else:
-        arr = np.zeros_like(arr)
-
-    return Image.fromarray(arr.astype(np.uint8))
-
-
-def load_image(path: Path) -> Image.Image:
-    """Dispatch on suffix. Raise on unsupported."""
-    suffix = path.suffix.lower()
-    if suffix == ".dcm":
-        return _load_dicom(path)
-    if suffix == ".png":
-        return Image.open(path)
-    raise ValueError(f"Unsupported image format: {path.suffix}")
+        raise ValueError(f"Unsupported NIfTI ndim {data.ndim} for {path}")
+    return _to_tensor(arr)
 
 
-# ---------- tensor helpers ----------
+def _load_sitk(path: Path) -> torch.Tensor:
+    img = sitk.ReadImage(str(path))
+    arr = sitk.GetArrayFromImage(img)  # already (D, H, W) for 3D
+    if arr.ndim == 2:
+        arr = arr[None, ...]
+    elif arr.ndim != 3:
+        raise ValueError(f"Unsupported SimpleITK array shape {arr.shape} for {path}")
+    return _to_tensor(arr)
 
-_TO_TENSOR = transforms.ToTensor()
+
+_LOADERS: dict[str, Callable[[Path], torch.Tensor]] = {
+    ".png": _load_pil,
+    ".jpg": _load_pil,
+    ".jpeg": _load_pil,
+    ".dcm": _load_dicom,
+    ".nii": _load_nifti,
+    ".nrrd": _load_sitk,
+    ".mha": _load_sitk,
+    ".mhd": _load_sitk,
+}
+
+
+def _normalized_suffix(path: Path) -> str:
+    """Return the dispatch suffix, collapsing .nii.gz -> .nii."""
+    if path.name.lower().endswith(".nii.gz"):
+        return ".nii"
+    return path.suffix.lower()
+
+
+def _is_supported(path: Path) -> bool:
+    return _normalized_suffix(path) in _LOADERS
+
+
+# ---------- ImageHelper ----------
+
+class ImageHelper:
+    """Suffix-dispatched lazy loader. Holds (D, 1, H, W) grayscale tensor in [0, 1]."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.suffix = _normalized_suffix(path)
+        if self.suffix not in _LOADERS:
+            raise ValueError(f"Unsupported format: {path}")
+        self._tensor: Optional[torch.Tensor] = None
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        if self._tensor is None:
+            self._tensor = _LOADERS[self.suffix](self.path)
+        return self._tensor
+
+    @property
+    def rgb_tensor(self) -> torch.Tensor:
+        return self.tensor.expand(-1, 3, -1, -1)
+
+    @property
+    def empty_mask(self) -> torch.Tensor:
+        t = self.tensor.squeeze(1)  # (D, H, W)
+        return (t.mean(dim=(1, 2)) < 1e-3) | (t.std(dim=(1, 2)) < 1e-3)
+
+
+# ---------- metric cache ----------
 
 _METRIC_CACHE: dict[str, torch.nn.Module] = {}
 
 
 def _get_metric(name: str) -> torch.nn.Module:
-    """Lazy singleton — avoid reloading pyiqa weights per image."""
     if name not in _METRIC_CACHE:
         _METRIC_CACHE[name] = pyiqa.create_metric(name, as_loss=False)
     return _METRIC_CACHE[name]
-
-
-def pil_to_rgb_tensor(image: Image.Image) -> torch.Tensor:
-    """PIL (any mode) -> [1, 3, H, W] float tensor in [0, 1]."""
-    return _TO_TENSOR(image.convert("RGB")).unsqueeze(0)
-
-
-def pil_to_grayscale_tensor(image: Image.Image) -> torch.Tensor:
-    """PIL (any mode) -> [1, 1, H, W] float tensor in [0, 1]."""
-    return _TO_TENSOR(image.convert("L")).unsqueeze(0)
 
 
 # ---------- record ----------
@@ -97,6 +156,8 @@ class ImageEvaluatorRecord:
     image_id: str
     source_model: Optional[str] = None
     mode: str = "no_reference"  # "full_reference" | "no_reference"
+    slice_index: int = 0
+    is_empty: bool = False
 
     # --- Full-Reference ---
     psnr: Optional[float] = None
@@ -118,144 +179,150 @@ class ImageEvaluatorRecord:
 class IQAEvaluator:
     def __init__(
         self,
-        input_path: str | Path,
-        target_path: Optional[str | Path] = None,
+        input_img: ImageHelper,
+        target_img: Optional[ImageHelper],
         source_model: Optional[str] = None,
     ):
-        self.input_path = Path(input_path)
-        self.target_path = Path(target_path) if target_path else None
+        self.input = input_img
+        self.target = target_img
         self.source_model = source_model
 
-        # Keep source images as PIL — convert per-metric via helpers.
-        self.input_img: Image.Image = load_image(self.input_path)
-        self.target_img: Optional[Image.Image] = (
-            load_image(self.target_path) if self.target_path else None
-        )
+        if self.target is not None and self.input.tensor.shape != self.target.tensor.shape:
+            raise ValueError(
+                f"shape mismatch: input {tuple(self.input.tensor.shape)} "
+                f"vs target {tuple(self.target.tensor.shape)}"
+            )
 
-    # ----- Full-Reference -----
+    # ----- metric methods (operate on a single slice index) -----
 
-    def __psnr(self) -> float:
-        metric = _get_metric("psnr")
-        inp = pil_to_grayscale_tensor(self.input_img)
-        tgt = pil_to_grayscale_tensor(self.target_img)
-        return float(metric(inp, tgt).item())
+    # // Full-Reference
+    def __psnr(self, i: int) -> float:
+        return float(_get_metric("psnr")(self.input.tensor[i:i+1], self.target.tensor[i:i+1]).item())
 
-    def __ssim(self) -> float:
-        metric = _get_metric("ssim")
-        inp = pil_to_grayscale_tensor(self.input_img)
-        tgt = pil_to_grayscale_tensor(self.target_img)
-        return float(metric(inp, tgt).item())
+    def __ssim(self, i: int) -> float:
+        return float(_get_metric("ssim")(self.input.tensor[i:i+1], self.target.tensor[i:i+1]).item())
 
-    def __lpips(self) -> float:
-        metric = _get_metric("lpips")
-        inp = pil_to_rgb_tensor(self.input_img)
-        tgt = pil_to_rgb_tensor(self.target_img)
-        return float(metric(inp, tgt).item())
+    def __lpips(self, i: int) -> float:
+        return float(_get_metric("lpips")(self.input.rgb_tensor[i:i+1], self.target.rgb_tensor[i:i+1]).item())
 
-    def __dists(self) -> float:
-        metric = _get_metric("dists")
-        inp = pil_to_rgb_tensor(self.input_img)
-        tgt = pil_to_rgb_tensor(self.target_img)
-        return float(metric(inp, tgt).item())
+    def __dists(self, i: int) -> float:
+        return float(_get_metric("dists")(self.input.rgb_tensor[i:i+1], self.target.rgb_tensor[i:i+1]).item())
 
-    # ----- No-Reference -----
+    # // No-Reference
 
-    def __clipiqa(self) -> float:
-        metric = _get_metric("clipiqa")
-        return float(metric(pil_to_rgb_tensor(self.input_img)).item())
+    def __clipiqa(self, i: int) -> float:
+        return float(_get_metric("clipiqa")(self.input.rgb_tensor[i:i+1]).item())
 
-    def __brisque(self) -> float:
-        metric = _get_metric("brisque")
-        return float(metric(pil_to_rgb_tensor(self.input_img)).item())
+    def __brisque(self, i: int) -> float:
+        return float(_get_metric("brisque")(self.input.rgb_tensor[i:i+1]).item())
 
-    def __niqe(self) -> float:
-        metric = _get_metric("niqe")
-        return float(metric(pil_to_rgb_tensor(self.input_img)).item())
+    def __niqe(self, i: int) -> float:
+        return float(_get_metric("niqe")(self.input.rgb_tensor[i:i+1]).item())
 
     # ----- orchestration -----
 
     def _safe_run(self, name: str, fn: Callable[[], float]) -> Optional[float]:
-        """Run a metric; on failure log and return None."""
         try:
             return fn()
         except Exception as exc:
-            print(f"[{self.input_path}] metric '{name}' failed: {exc}")
+            print(f"[{self.input.path}] metric '{name}' failed: {exc}")
             return None
 
-    def run_evaluation(self) -> ImageEvaluatorRecord:
-        image_id = (
-            f"{self.source_model}/{self.input_path.stem}"
-            if self.source_model
-            else self.input_path.stem
-        )
-        record = ImageEvaluatorRecord(
-            image_id=image_id,
-            source_model=self.source_model,
-            mode="full_reference" if self.target_img is not None else "no_reference",
-        )
+    def _slice_id(self, i: int) -> str:
+        stem = self.input.path.name.split(".")[0]
+        base = f"{stem}_s{i:03d}"
+        return f"{self.source_model}/{base}" if self.source_model else base
 
-        # NR metrics on every image.
-        record.clipiqa = self._safe_run("clipiqa", self.__clipiqa)
-        record.brisque = self._safe_run("brisque", self.__brisque)
-        record.niqe = self._safe_run("niqe", self.__niqe)
+    def run_evaluation(self) -> list[ImageEvaluatorRecord]:
+        records: list[ImageEvaluatorRecord] = []
+        empty = self.input.empty_mask
+        D = self.input.tensor.shape[0]
+        has_target = self.target is not None
 
-        if self.target_img is not None:
-            record.psnr = self._safe_run("psnr", self.__psnr)
-            record.ssim = self._safe_run("ssim", self.__ssim)
-            record.lpips = self._safe_run("lpips", self.__lpips)
-            record.dists = self._safe_run("dists", self.__dists)
+        for i in range(D):
+            rec = ImageEvaluatorRecord(
+                image_id=self._slice_id(i),
+                source_model=self.source_model,
+                mode="full_reference" if has_target else "no_reference",
+                slice_index=i,
+                is_empty=bool(empty[i].item()),
+            )
+            if not rec.is_empty:
+                rec.clipiqa = self._safe_run("clipiqa", lambda i=i: self.__clipiqa(i))
+                rec.brisque = self._safe_run("brisque", lambda i=i: self.__brisque(i))
+                rec.niqe = self._safe_run("niqe", lambda i=i: self.__niqe(i))
+                if has_target:
+                    rec.psnr = self._safe_run("psnr", lambda i=i: self.__psnr(i))
+                    rec.ssim = self._safe_run("ssim", lambda i=i: self.__ssim(i))
+                    rec.lpips = self._safe_run("lpips", lambda i=i: self.__lpips(i))
+                    rec.dists = self._safe_run("dists", lambda i=i: self.__dists(i))
+            records.append(rec)
 
         # TODO: Segmentation
 
-        return record
+        return records
 
 
 # ---------- dataset driver ----------
 
-def evaluate_dataset(data_root: Path, report_path: Path) -> pd.DataFrame:
-    input_root = data_root / "input"
-    target_root = data_root / "target"
+def evaluate_dataset(report_path: Path) -> pd.DataFrame:
+    rows: list[dict] = []
+
+    # ---- previous directory-walking implementation (commented out) ----
+    # if not INPUT.is_dir():
+    #     print(f"No input directory at {INPUT}")
+    #     return pd.DataFrame(columns=list(ImageEvaluatorRecord.__annotations__.keys()))
+    #
+    # def _process_file(input_path: Path, source_model: Optional[str]):
+    #     patient_stem = input_path.relative_to(INPUT).parts[0]
+    #     target_candidate = TARGET / (patient_stem + ".nii.gz")
+    #     target_path = target_candidate if target_candidate.is_file() else None
+    #     try:
+    #         in_helper = ImageHelper(input_path)
+    #         tgt_helper = ImageHelper(target_path) if target_path else None
+    #         records = IQAEvaluator(in_helper, tgt_helper, source_model).run_evaluation()
+    #     except Exception as exc:
+    #         print(f"[{input_path}] evaluator init/run failed: {exc}")
+    #         return
+    #     rows.extend(r.to_dict() for r in records)
+    #
+    # subdirs = sorted(p for p in INPUT.iterdir() if p.is_dir())
+    # if subdirs:
+    #     for model_dir in subdirs:
+    #         source_model = model_dir.name
+    #         for input_path in sorted(model_dir.rglob("*")):
+    #             if input_path.is_file() and _is_supported(input_path):
+    #                 _process_file(input_path, source_model)
+    # else:
+    #     for input_path in sorted(INPUT.rglob("*")):
+    #         if input_path.is_file() and _is_supported(input_path):
+    #             _process_file(input_path, None)
+
+    # ---- direct single-file input/target ----
+    # INPUT is a direct path to a file; TARGET is a direct path to a file (if it exists).
+    if not INPUT.is_file():
+        print(f"No input file at {INPUT}")
+        return pd.DataFrame(columns=list(ImageEvaluatorRecord.__annotations__.keys()))
+
+    target_path = TARGET if TARGET.is_file() else None
+    try:
+        in_helper = ImageHelper(INPUT)
+        tgt_helper = ImageHelper(target_path) if target_path else None
+        records = IQAEvaluator(in_helper, tgt_helper).run_evaluation()
+        rows.extend(r.to_dict() for r in records)
+    except Exception as exc:
+        print(f"[{INPUT}] evaluator init/run failed: {exc}")
 
     columns = list(ImageEvaluatorRecord.__annotations__.keys())
-    report = pd.DataFrame(columns=columns)
-
-    if not input_root.is_dir():
-        print(f"No input directory at {input_root}")
-        report.to_csv(report_path, index=False)
-        return report
-
-    for model_dir in sorted(p for p in input_root.iterdir() if p.is_dir()):
-        source_model = model_dir.name
-        for input_path in sorted(model_dir.rglob("*")):
-            if not input_path.is_file():
-                continue
-            if input_path.suffix.lower() not in SUPPORTED_SUFFIXES:
-                continue
-
-            rel = input_path.relative_to(input_root)
-            target_candidate = target_root / rel
-            target_path = target_candidate if target_candidate.is_file() else None
-
-            try:
-                evaluator = IQAEvaluator(input_path, target_path, source_model)
-                record = evaluator.run_evaluation()
-            except Exception as exc:
-                print(f"[{input_path}] evaluator init/run failed: {exc}")
-                continue
-
-            report = pd.concat(
-                [report, pd.DataFrame([record.to_dict()])], ignore_index=True
-            )
-            del record
-
+    report = pd.DataFrame(rows, columns=columns)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     report.to_csv(report_path, index=False)
     return report
 
 
 def main():
-    data_root = Path("data")
-    report_path = Path("report") / "report.csv"
-    report = evaluate_dataset(data_root, report_path)
+    report_path = Path("report") / "test_report.csv"
+    report = evaluate_dataset(report_path)
     print(report)
     print(f"Report written: {report_path}")
 
