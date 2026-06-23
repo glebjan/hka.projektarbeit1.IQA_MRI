@@ -12,7 +12,8 @@ import torch
 from PIL import Image
 from skimage.filters import threshold_otsu
 
-import radimagenet_lpips  # noqa: F401 — registers RadImageNetLPIPS in pyiqa
+import radimagenet_lpips   # noqa: F401 — registers RadImageNetLPIPS in pyiqa
+import clip_iqa_medical    # noqa: F401 — registers ClipIQALung / ClipIQABrain in pyiqa
 
 from constants import INPUT, TARGET, REPORT, RESNET50
 
@@ -202,6 +203,8 @@ _METRIC_SPECS: list[MetricSpec] = [
     MetricSpec("radimagenet_lpips", "lower_is_better",  True,  "rgb"),
     # No-reference metrics
     MetricSpec("clipiqa",           "higher_is_better", False, "rgb"),
+    MetricSpec("clip_iqa_lung",     "higher_is_better", False, "rgb"),
+    MetricSpec("clip_iqa_brain",    "higher_is_better", False, "rgb"),
     MetricSpec("brisque",           "lower_is_better",  False, "rgb"),
     MetricSpec("niqe",              "lower_is_better",  False, "rgb"),
 ]
@@ -290,6 +293,8 @@ class ImageEvaluatorRecord:
     radimagenet_lpips:   Optional[float] = None
     # No-reference metrics
     clipiqa:             Optional[float] = None
+    clip_iqa_lung:       Optional[float] = None
+    clip_iqa_brain:      Optional[float] = None
     brisque:             Optional[float] = None
     niqe:                Optional[float] = None
 
