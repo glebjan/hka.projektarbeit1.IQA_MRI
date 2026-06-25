@@ -17,6 +17,8 @@ import clip_iqa_medical    # noqa: F401 — registers ClipIQALung / ClipIQABrain
 
 from constants import INPUT, TARGET, REPORT, RESNET50
 
+BATCH_SIZE = 32  # Slices pro Batch-Call. Bei OOM reduzieren.
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ---------------------------------------------------------------------------
 # Image loading
@@ -225,7 +227,7 @@ def _get_metric(name: str) -> torch.nn.Module:
         kwargs: dict = {}
         if name == "radimagenet_lpips":
             kwargs["backbone_path"] = str(RESNET50)
-        _METRIC_CACHE[name] = pyiqa.create_metric(name, as_loss=False, **kwargs)
+        _METRIC_CACHE[name] = pyiqa.create_metric(name, as_loss=False, device=DEVICE, **kwargs)
     return _METRIC_CACHE[name]
 
 
@@ -363,25 +365,24 @@ class IQAEvaluator:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _pick_tensor(self, img: ImageLoader, channels: _MetricChannels, i: int) -> torch.Tensor:
+    def _pick_tensor_batch(self, img: ImageLoader, channels: _MetricChannels, indices: list[int]) -> torch.Tensor:
         base = img.tensor if channels == "gray" else img.rgb_tensor
-        return base[i : i + 1]
+        return base[indices]  # (len(indices), C, H, W)
 
-    def _compute(self, spec: MetricSpec, slice_index: int) -> float:
-        """Compute one metric for a single slice."""
+    def _compute_batch(self, spec: MetricSpec, indices: list[int]) -> list[Optional[float]]:
         metric = _get_metric(spec.name)
-        inp = self._pick_tensor(self.input, spec.channels, slice_index)
-        if spec.reference:
-            ref = self._pick_tensor(self.target, spec.channels, slice_index)
-            return float(metric(inp, ref).item())
-        return float(metric(inp).item())
-
-    def _run_safely(self, metric_name: str, compute: Callable[[], float]) -> Optional[float]:
+        inp = self._pick_tensor_batch(self.input, spec.channels, indices).to(DEVICE)
         try:
-            return compute()
+            if spec.reference:
+                ref = self._pick_tensor_batch(self.target, spec.channels, indices).to(DEVICE)
+                scores = metric(inp, ref)
+            else:
+                scores = metric(inp)
+            scores = scores.squeeze(-1) if scores.dim() == 2 else scores
+            return [float(s.item()) for s in scores]
         except Exception as exc:
-            print(f"[{self.input.path}] metric '{metric_name}' failed: {exc}")
-            return None
+            print(f"[{self.input.path}] metric '{spec.name}' batch failed: {exc}")
+            return [None] * len(indices)
 
     def _format_slice_id(self, slice_index: int) -> str:
         base = f"{_strip_all_extensions(self.input.path)}_s{slice_index:03d}"
@@ -393,28 +394,32 @@ class IQAEvaluator:
 
     def run_evaluation(self) -> list[ImageEvaluatorRecord]:
         """Evaluate all metrics for every slice.  No files are written."""
-        records:    list[ImageEvaluatorRecord] = []
-        empty_mask: torch.Tensor               = self.input.empty_slice_mask
-        has_target: bool                       = self.target is not None
+        D          = self.input.tensor.shape[0]
+        empty_mask = self.input.empty_slice_mask
+        has_target = self.target is not None
+        mode       = "full_reference" if has_target else "no_reference"
 
-        for i in range(self.input.tensor.shape[0]):
-            record = ImageEvaluatorRecord(
+        records = [
+            ImageEvaluatorRecord(
                 image_id=self._format_slice_id(i),
                 source_model=self.source_model,
-                mode="full_reference" if has_target else "no_reference",
+                mode=mode,
                 slice_index=i,
                 is_empty=bool(empty_mask[i].item()),
             )
-            if not record.is_empty:
-                for spec in _METRIC_SPECS:
-                    if spec.reference and not has_target:
-                        continue
-                    setattr(
-                        record,
-                        spec.name,
-                        self._run_safely(spec.name, lambda s=spec, idx=i: self._compute(s, idx)),
-                    )
-            records.append(record)
+            for i in range(D)
+        ]
+
+        active = [i for i in range(D) if not records[i].is_empty]
+
+        for spec in _METRIC_SPECS:
+            if spec.reference and not has_target:
+                continue
+            for chunk_start in range(0, len(active), BATCH_SIZE):
+                chunk = active[chunk_start : chunk_start + BATCH_SIZE]
+                values = self._compute_batch(spec, chunk)
+                for idx, value in zip(chunk, values):
+                    setattr(records[idx], spec.name, value)
 
         return records
 
