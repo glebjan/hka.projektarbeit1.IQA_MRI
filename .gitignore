@@ -8,6 +8,8 @@
 # Unignore tracked paths
 !src/
 !src/**
+!tests/
+!tests/**
 !requirements.txt
 !models/
 !models/**
@@ -20,7 +22,10 @@ src/**/*.pyc
 src/**/*.pyo
 src/**/*.pyd
 
-
+tests/**/__pycache__/
+tests/**/*.pyc
+tests/**/*.pyo
+tests/**/*.pyd
 
 # vscode Settings
 !.vscode/settings.json

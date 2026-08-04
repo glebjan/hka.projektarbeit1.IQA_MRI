@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from main import ImageLoader, _is_supported
+from image_loader import ImageLoader, is_supported
 
 DATA_PATH = Path("data/")
 REPORT_PATH = Path("report") / "tensor_sizes.csv"
@@ -23,7 +23,7 @@ def analyze(data_path: Path, report_path: Path) -> pd.DataFrame:
     paths = [data_path] if data_path.is_file() else sorted(data_path.rglob("*"))
 
     for p in paths:
-        if not (p.is_file() and _is_supported(p)):
+        if not (p.is_file() and is_supported(p)):
             continue
         try:
             loader = ImageLoader(p)

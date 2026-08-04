@@ -1,0 +1,74 @@
+"""EvaluationResult — holds computed records, owns all output operations."""
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import pandas as pd
+
+from constants import REPORT
+from image_loader import ImageLoader
+from mask_writer import MaskWriter, MASK_DIR
+from metrics import registry
+from records import ImageEvaluatorRecord
+
+
+@dataclass
+class _EvaluatedImage:
+    input_path: Path
+    records:    list[ImageEvaluatorRecord]
+
+
+class EvaluationResult:
+    """Container for the results of one evaluation run.
+
+    Normal use (notebook, no file I/O):
+        result = evaluate()
+        df     = result.to_frame()
+
+    Optional report output:
+        result.generate_report(Path("report/my_output.csv"))
+    """
+
+    def __init__(self, images: list[_EvaluatedImage]):
+        self._images = images
+
+    # ------------------------------------------------------------------
+    # Pure data access — no file I/O
+    # ------------------------------------------------------------------
+
+    def to_frame(self) -> pd.DataFrame:
+        """Return all records as a DataFrame.  Nothing is written to disk."""
+        rows = [record.to_dict() for img in self._images for record in img.records]
+        fixed_columns = [k for k in ImageEvaluatorRecord.__annotations__ if k != "extra"]
+        extra_columns = [spec.name for spec in registry.specs if not spec.builtin]
+        return pd.DataFrame(rows, columns=fixed_columns + extra_columns)
+
+    # ------------------------------------------------------------------
+    # Optional output
+    # ------------------------------------------------------------------
+
+    def generate_report(
+        self,
+        report_path: Path = REPORT,
+        mask_dir:    Path = MASK_DIR,
+    ) -> pd.DataFrame:
+        """Write the CSV report and segmentation mask images, then return the DataFrame.
+
+        Args:
+            report_path: Destination for the CSV file.
+            mask_dir:    Directory that receives the slice/mask/overlay PNGs.
+
+        Returns:
+            The same DataFrame that to_frame() would return.
+        """
+        df = self.to_frame()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(report_path, index=False)
+        print(f"CSV written: {report_path}")
+
+        writer = MaskWriter(mask_dir)
+        for img in self._images:
+            loader = ImageLoader(img.input_path)
+            writer.write(loader, img.records)
+
+        return df
