@@ -9,6 +9,8 @@ Importing this module registers RadImageNetLPIPS in pyiqa's ARCH_REGISTRY
 and injects its entry into DEFAULT_CONFIGS so pyiqa.create_metric works.
 """
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 from torchvision import models
@@ -29,8 +31,8 @@ _BACKBONE_KEY_REMAP = {
 }
 
 
-def _remap_backbone_keys(raw_state: dict) -> dict:
-    remapped = {}
+def _remap_backbone_keys(raw_state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    remapped: dict[str, torch.Tensor] = {}
     for old_key, value in raw_state.items():
         for old_prefix, new_prefix in _BACKBONE_KEY_REMAP.items():
             if old_key.startswith(old_prefix):
@@ -45,9 +47,9 @@ class _RadImageNetBackbone(nn.Module):
     Returns intermediate activations after the stem and each residual stage.
     """
 
-    CHANNEL_DIMS = [64, 256, 512, 1024, 2048]
+    CHANNEL_DIMS: list[int] = [64, 256, 512, 1024, 2048]
 
-    def __init__(self, weights_path: str):
+    def __init__(self, weights_path: str) -> None:
         super().__init__()
         resnet = models.resnet50(weights=None)
         self.stem   = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu)
@@ -89,10 +91,10 @@ class RadImageNetLPIPS(nn.Module):
         self,
         backbone_path: str,
         calibrated: bool = False,
-        pretrained_model_path: str = None,
+        pretrained_model_path: Optional[str] = None,
         use_dropout: bool = True,
-        **kwargs,
-    ):
+        **kwargs: object,
+    ) -> None:
         super().__init__()
 
         self.register_buffer(
@@ -125,13 +127,13 @@ class RadImageNetLPIPS(nn.Module):
         Returns:
             Per-sample distance scores (N,). Lower = more similar.
         """
-        def normalize_and_extract(img):
+        def normalize_and_extract(img: torch.Tensor) -> list[torch.Tensor]:
             return self.net((img - self.mean) / self.std)
 
         distorted_feats  = normalize_and_extract(x)
         reference_feats  = normalize_and_extract(y)
 
-        stage_scores = []
+        stage_scores: list[torch.Tensor] = []
         for k in range(len(self.chns)):
             normalized_diff = (
                 normalize_tensor(distorted_feats[k]) - normalize_tensor(reference_feats[k])

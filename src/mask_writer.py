@@ -43,7 +43,7 @@ def _mask_to_uint8(binary_mask: np.ndarray) -> np.ndarray:
 def _apply_color_overlay(
     grayscale_slice: np.ndarray,
     foreground_mask: np.ndarray,
-    tint_color: tuple = (255, 0, 0),
+    tint_color: tuple[int, int, int] = (255, 0, 0),
     tint_strength: float = 0.4,
 ) -> np.ndarray:
     rgb = np.stack([_slice_to_uint8(grayscale_slice)] * 3, axis=-1).astype(np.float32)
@@ -62,7 +62,7 @@ def _apply_color_overlay(
 class MaskWriter:
     """Writes slice / mask / overlay PNGs for the best-scoring slice per metric."""
 
-    def __init__(self, output_dir: Path = MASK_DIR):
+    def __init__(self, output_dir: Path = MASK_DIR) -> None:
         self.output_dir = output_dir
 
     def write(

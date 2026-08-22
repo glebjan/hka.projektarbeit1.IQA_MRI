@@ -46,7 +46,7 @@ class _ClipIQAMedicalBase(nn.Module):
 
     _prompts: list[str] = []
 
-    def __init__(self, backbone: str = "RN50", **kwargs):
+    def __init__(self, backbone: str = "RN50", **kwargs: object) -> None:
         super().__init__()
         self.clip_model = [load(backbone, "cpu")]
         self.prompt_pairs = clip.tokenize(self._prompts)

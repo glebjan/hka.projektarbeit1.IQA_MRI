@@ -28,7 +28,7 @@ class ImageEvaluatorRecord:
     # User-registered metrics (see metrics.register_metric) — flattened into to_dict()
     extra:               dict[str, Optional[float]] = field(default_factory=dict)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         d = asdict(self)
         d.update(d.pop("extra"))
         return d

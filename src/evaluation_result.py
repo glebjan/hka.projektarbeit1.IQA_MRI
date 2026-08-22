@@ -29,7 +29,7 @@ class EvaluationResult:
         result.generate_report(Path("report/my_output.csv"))
     """
 
-    def __init__(self, images: list[_EvaluatedImage]):
+    def __init__(self, images: list[_EvaluatedImage]) -> None:
         self._images = images
 
     # ------------------------------------------------------------------

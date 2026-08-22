@@ -14,7 +14,7 @@ REPORT_PATH = Path("report") / "tensor_sizes.csv"
 
 
 def analyze(data_path: Path, report_path: Path) -> pd.DataFrame:
-    rows: list[dict] = []
+    rows: list[dict[str, object]] = []
 
     if not data_path.exists():
         print(f"Path does not exist: {data_path}")
@@ -47,7 +47,7 @@ def analyze(data_path: Path, report_path: Path) -> pd.DataFrame:
     return df
 
 
-def main():
+def main() -> None:
     analyze(DATA_PATH, REPORT_PATH)
 
 

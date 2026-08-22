@@ -24,7 +24,7 @@ class IQAEvaluator:
         input_image:  ImageLoader,
         target_image: Optional[ImageLoader],
         source_model: Optional[str] = None,
-    ):
+    ) -> None:
         self.input        = input_image
         self.target       = target_image
         self.source_model = source_model

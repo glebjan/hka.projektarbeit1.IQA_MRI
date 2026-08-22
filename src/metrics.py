@@ -61,7 +61,7 @@ class MetricSpec:
 class PyIQAMetric:
     """Adapter that makes a pyiqa metric satisfy the Metric protocol."""
 
-    def __init__(self, name: str, **kwargs):
+    def __init__(self, name: str, **kwargs: object) -> None:
         self._name   = name
         self._kwargs = kwargs
         self._impl: Optional[torch.nn.Module] = None
@@ -77,7 +77,7 @@ class PyIQAMetric:
 class MetricRegistry:
     """Holds registered MetricSpecs and lazily-instantiated Metric objects."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._specs: dict[str, MetricSpec] = {}
         self._cache: dict[str, Metric] = {}
 
@@ -123,7 +123,7 @@ def register_metric(
 # Built-in metrics (pyiqa-backed)
 # ---------------------------------------------------------------------------
 
-def _pyiqa_factory(name: str, **kwargs) -> Callable[[], Metric]:
+def _pyiqa_factory(name: str, **kwargs: object) -> Callable[[], Metric]:
     return lambda: PyIQAMetric(name, **kwargs)
 
 
