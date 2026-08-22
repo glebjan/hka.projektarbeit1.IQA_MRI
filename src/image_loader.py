@@ -138,7 +138,7 @@ def find_matching_target(input_path: Path, targets: list[Path]) -> Optional[Path
 # ---------------------------------------------------------------------------
 
 class ImageLoader:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self.path = path
         self.suffix = canonical_suffix(path)
         if self.suffix not in _LOADERS:
