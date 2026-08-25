@@ -119,3 +119,41 @@ def hausdorff95_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> 
 
 
 HAUSDORFF95 = hausdorff95_metric()
+
+
+def normalized_surface_dice_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricSpec:
+    """Normalized Surface Dice (NSD): fraction of the predicted/gt boundary within a tolerance distance.
+
+    Domain: medical (MONAI). `class_thresholds` is the tolerance distance per
+    class (defaults to `[1.0]`, one voxel) — MONAI requires it and treats it
+    in the same units as `spacing`. For another domain, set both
+    `class_thresholds` (acceptable boundary error) and `spacing` (physical
+    voxel size) to that domain's units and tolerance, and extend
+    `class_thresholds` to one entry per class if using multi-class masks.
+    """
+    monai_kwargs.setdefault("include_background", True)
+    monai_kwargs.setdefault("class_thresholds", [1.0])
+    metric = MonaiSegmentationMetric(compute_surface_dice, threshold=threshold, **monai_kwargs)
+    return MetricSpec(
+        name="nsd",
+        direction="higher_is_better",
+        reference=True,
+        channels="gray",
+        factory=lambda: metric,
+        builtin=False,
+        description=(
+            "Normalized Surface Dice: fraction of the predicted and "
+            "ground-truth boundaries that lie within a tolerance distance of "
+            "each other (1.0 = all boundary points within tolerance). Domain: "
+            "medical (MONAI). Tolerance is set via `class_thresholds` "
+            "(default 1 voxel per class) and interpreted in the units of "
+            "`spacing`; for another domain (e.g. materials micrographs) set "
+            "both to that domain's physical voxel size and acceptable "
+            "boundary error, and add one threshold per class for multi-class "
+            "masks."
+        ),
+        domain=DOMAIN_MEDICAL,
+    )
+
+
+NSD = normalized_surface_dice_metric()

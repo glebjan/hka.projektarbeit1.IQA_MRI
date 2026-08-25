@@ -9,6 +9,8 @@ from segmentation_metrics.monai_metrics import (
     DICE,
     hausdorff95_metric,
     HAUSDORFF95,
+    normalized_surface_dice_metric,
+    NSD,
 )
 
 
@@ -94,3 +96,31 @@ class TestHausdorff95MetricBuilder:
 
     def test_default_constant(self):
         assert HAUSDORFF95.name == "hausdorff95"
+
+
+class TestNormalizedSurfaceDiceMetricBuilder:
+    def test_returns_metric_spec(self):
+        spec = normalized_surface_dice_metric()
+        assert spec.name == "nsd"
+        assert spec.direction == "higher_is_better"
+        assert spec.reference is True
+        assert spec.channels == "gray"
+        assert spec.builtin is False
+        assert spec.domain == "medical (MONAI)"
+
+    def test_identical_masks_score_perfect(self):
+        spec = normalized_surface_dice_metric()
+        metric = spec.factory()
+        pred, _ = _binary_batch(n=2)
+        scores = metric(pred, pred.clone())
+        assert all(s == pytest.approx(1.0) for s in scores)
+
+    def test_custom_class_thresholds_override(self):
+        spec = normalized_surface_dice_metric(class_thresholds=[2.0])
+        metric = spec.factory()
+        pred, gt = _binary_batch(n=1)
+        scores = metric(pred, gt)
+        assert len(scores) == 1
+
+    def test_default_constant(self):
+        assert NSD.name == "nsd"
