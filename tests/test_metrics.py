@@ -234,3 +234,22 @@ class TestBuiltinMetrics:
         names = {s.name for s in isolated_registry.specs}
         for name in self.EXPECTED:
             assert name in names, f"'{name}' missing after explicit registration"
+
+
+# ---------------------------------------------------------------------------
+# MetricSpec description and domain fields
+# ---------------------------------------------------------------------------
+
+class TestMetricSpecDescriptionFields:
+    def test_defaults_are_empty_strings(self):
+        spec = MetricSpec("dummy", "higher_is_better", False, "gray", lambda: None)
+        assert spec.description == ""
+        assert spec.domain == ""
+
+    def test_accepts_explicit_values(self):
+        spec = MetricSpec(
+            "dummy", "higher_is_better", False, "gray", lambda: None,
+            description="measures X", domain="medical (MONAI)",
+        )
+        assert spec.description == "measures X"
+        assert spec.domain == "medical (MONAI)"

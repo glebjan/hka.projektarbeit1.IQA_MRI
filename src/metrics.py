@@ -53,13 +53,19 @@ class MetricSpec:
         factory:   builds the Metric instance (lazily, cached by MetricRegistry).
         builtin:   True for framework-shipped metrics (dedicated record field);
                    False for user-registered metrics (stored in record.extra).
+        description: human-readable explanation of what the metric measures,
+                     shown to users choosing a metric.
+        domain:      the domain the metric's defaults are calibrated for,
+                     e.g. "medical (MONAI)". Empty string means domain-agnostic.
     """
     name:      str
     direction: MetricDirection
     reference: bool
     channels:  MetricChannels
     factory:   Callable[[], Metric]
-    builtin:   bool = True
+    builtin:      bool = True
+    description:  str  = ""
+    domain:       str  = ""
 
 
 class PyIQAMetric:
