@@ -190,3 +190,72 @@ def average_surface_distance_metric(*, threshold: Optional[float] = None, **mona
 
 
 ASSD = average_surface_distance_metric()
+
+
+class MonaiPanopticQualityMetric:
+    """Adapter for MONAI's compute_panoptic_quality, which takes one (H, W)
+    integer instance-label map per image (no batch/channel dim, unlike the
+    other four metrics) — this loops over the batch itself.
+
+    Binary 0/1 masks are treated as a single-instance PQ (foreground = one
+    instance). For true multi-instance panoptic quality, supply pred/gt with
+    distinct integer instance IDs per object instead of a plain 0/1 mask.
+    """
+
+    def __init__(self, *, threshold: Optional[float] = None, **monai_kwargs):
+        self._threshold = threshold
+        self._kwargs    = monai_kwargs
+
+    def _binarize(self, t: torch.Tensor) -> torch.Tensor:
+        return (t > self._threshold).float() if self._threshold is not None else t
+
+    def __call__(self, input: torch.Tensor, target: Optional[torch.Tensor] = None) -> list[Optional[float]]:
+        y_pred = self._binarize(input)
+        y      = self._binarize(target)
+        scores: list[Optional[float]] = []
+        for i in range(y_pred.shape[0]):
+            pred_map = y_pred[i, 0].long()
+            gt_map   = y[i, 0].long()
+            score = compute_panoptic_quality(pred_map, gt_map, **self._kwargs)
+            scores.append(None if torch.isnan(score) else float(score.item()))
+        return scores
+
+
+def panoptic_quality_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricSpec:
+    """Panoptic Quality (PQ): combines detection accuracy (matching instances
+    by IoU) and segmentation accuracy (mean IoU of matched instances) into one score.
+
+    Domain: medical (MONAI) — designed for instance segmentation (e.g.
+    individual cells, lesions). For a plain binary mask, PQ degenerates to a
+    single-instance IoU-based score. For another domain with multiple
+    distinct objects (e.g. grains/particles in a materials micrograph),
+    supply pred/gt with a unique integer label per instance instead of a
+    binary mask, and tune `match_iou_threshold` (default 0.5) for that
+    domain's acceptable localization tolerance.
+    """
+    monai_kwargs.setdefault("match_iou_threshold", 0.5)
+    metric = MonaiPanopticQualityMetric(threshold=threshold, **monai_kwargs)
+    return MetricSpec(
+        name="panoptic_quality",
+        direction="higher_is_better",
+        reference=True,
+        channels="gray",
+        factory=lambda: metric,
+        builtin=False,
+        description=(
+            "Panoptic Quality: combines instance-detection accuracy (are the "
+            "right objects found?) and segmentation accuracy (how well do "
+            "matched instances overlap?) into one score (1.0 = perfect). "
+            "Domain: medical (MONAI), designed for instance segmentation "
+            "(e.g. individual cells or lesions); on a plain binary mask it "
+            "reduces to a single-instance IoU score. For another domain with "
+            "multiple distinct objects (e.g. grains in a materials "
+            "micrograph), supply pred/gt with a unique integer label per "
+            "instance and tune `match_iou_threshold` (default 0.5) for that "
+            "domain's localization tolerance."
+        ),
+        domain=DOMAIN_MEDICAL,
+    )
+
+
+PANOPTIC_QUALITY = panoptic_quality_metric()

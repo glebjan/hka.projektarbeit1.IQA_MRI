@@ -13,6 +13,9 @@ from segmentation_metrics.monai_metrics import (
     NSD,
     average_surface_distance_metric,
     ASSD,
+    MonaiPanopticQualityMetric,
+    panoptic_quality_metric,
+    PANOPTIC_QUALITY,
 )
 
 
@@ -147,3 +150,39 @@ class TestAverageSurfaceDistanceMetricBuilder:
 
     def test_default_constant(self):
         assert ASSD.name == "assd"
+
+
+class TestMonaiPanopticQualityMetric:
+    def test_call_returns_one_score_per_sample(self):
+        metric = MonaiPanopticQualityMetric()
+        pred, gt = _binary_batch(n=2)
+        scores = metric(pred, gt)
+        assert len(scores) == 2
+        assert all(isinstance(s, float) for s in scores)
+
+    def test_identical_masks_score_perfect_pq(self):
+        metric = MonaiPanopticQualityMetric()
+        pred, _ = _binary_batch(n=2)
+        scores = metric(pred, pred.clone())
+        assert all(s == pytest.approx(1.0) for s in scores)
+
+
+class TestPanopticQualityMetricBuilder:
+    def test_returns_metric_spec(self):
+        spec = panoptic_quality_metric()
+        assert spec.name == "panoptic_quality"
+        assert spec.direction == "higher_is_better"
+        assert spec.reference is True
+        assert spec.channels == "gray"
+        assert spec.builtin is False
+        assert spec.domain == "medical (MONAI)"
+
+    def test_default_constant(self):
+        assert PANOPTIC_QUALITY.name == "panoptic_quality"
+
+    def test_factory_produces_working_metric(self):
+        spec = panoptic_quality_metric()
+        metric = spec.factory()
+        pred, gt = _binary_batch(n=2)
+        scores = metric(pred, gt)
+        assert len(scores) == 2
