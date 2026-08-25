@@ -7,6 +7,8 @@ from segmentation_metrics.monai_metrics import (
     MonaiSegmentationMetric,
     dice_metric,
     DICE,
+    hausdorff95_metric,
+    HAUSDORFF95,
 )
 
 
@@ -71,3 +73,24 @@ class TestDiceMetricBuilder:
         pred, gt = _binary_batch(n=2)
         scores = metric(pred, gt)
         assert len(scores) == 2
+
+
+class TestHausdorff95MetricBuilder:
+    def test_returns_metric_spec(self):
+        spec = hausdorff95_metric()
+        assert spec.name == "hausdorff95"
+        assert spec.direction == "lower_is_better"
+        assert spec.reference is True
+        assert spec.channels == "gray"
+        assert spec.builtin is False
+        assert spec.domain == "medical (MONAI)"
+
+    def test_identical_masks_score_zero_distance(self):
+        spec = hausdorff95_metric()
+        metric = spec.factory()
+        pred, _ = _binary_batch(n=2)
+        scores = metric(pred, pred.clone())
+        assert all(s == pytest.approx(0.0) for s in scores)
+
+    def test_default_constant(self):
+        assert HAUSDORFF95.name == "hausdorff95"

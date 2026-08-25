@@ -85,3 +85,37 @@ def dice_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricS
 
 
 DICE = dice_metric()
+
+
+def hausdorff95_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricSpec:
+    """95th-percentile Hausdorff Distance: worst-case boundary error, robust to outlier voxels.
+
+    Domain: medical (MONAI) — the returned distance is in voxel units unless
+    `spacing` is supplied (physical units per voxel, e.g. mm for medical scans
+    or µm for materials micrographs). Pass `spacing=<value or per-axis list>`
+    to get physically meaningful distances in another domain.
+    """
+    monai_kwargs.setdefault("include_background", True)
+    monai_kwargs.setdefault("percentile", 95)
+    metric = MonaiSegmentationMetric(compute_hausdorff_distance, threshold=threshold, **monai_kwargs)
+    return MetricSpec(
+        name="hausdorff95",
+        direction="lower_is_better",
+        reference=True,
+        channels="gray",
+        factory=lambda: metric,
+        builtin=False,
+        description=(
+            "95th-percentile Hausdorff Distance: how far the predicted "
+            "segmentation boundary is from the ground-truth boundary in the "
+            "worst 5% of cases (lower = closer boundaries). Domain: medical "
+            "(MONAI). Distance is in voxel units by default; pass "
+            "`spacing=<mm-per-voxel or per-axis list>` for physical units, or "
+            "the equivalent voxel size for another domain (e.g. µm for "
+            "materials micrographs)."
+        ),
+        domain=DOMAIN_MEDICAL,
+    )
+
+
+HAUSDORFF95 = hausdorff95_metric()
