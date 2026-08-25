@@ -157,3 +157,36 @@ def normalized_surface_dice_metric(*, threshold: Optional[float] = None, **monai
 
 
 NSD = normalized_surface_dice_metric()
+
+
+def average_surface_distance_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricSpec:
+    """Average Symmetric Surface Distance (ASSD): mean boundary distance in both directions.
+
+    Domain: medical (MONAI). Like HD95, the result is in voxel units unless
+    `spacing` is supplied. For another domain, set `spacing` to that domain's
+    physical voxel size to get a physically meaningful distance.
+    """
+    monai_kwargs.setdefault("include_background", True)
+    monai_kwargs.setdefault("symmetric", True)
+    metric = MonaiSegmentationMetric(compute_average_surface_distance, threshold=threshold, **monai_kwargs)
+    return MetricSpec(
+        name="assd",
+        direction="lower_is_better",
+        reference=True,
+        channels="gray",
+        factory=lambda: metric,
+        builtin=False,
+        description=(
+            "Average Symmetric Surface Distance: mean distance between the "
+            "predicted and ground-truth boundaries, averaged in both "
+            "directions (lower = closer boundaries on average). Domain: "
+            "medical (MONAI). Distance is in voxel units by default; pass "
+            "`spacing=<mm-per-voxel or per-axis list>` for physical units, or "
+            "the equivalent voxel size for another domain (e.g. µm for "
+            "materials micrographs)."
+        ),
+        domain=DOMAIN_MEDICAL,
+    )
+
+
+ASSD = average_surface_distance_metric()

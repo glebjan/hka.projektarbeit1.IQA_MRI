@@ -11,6 +11,8 @@ from segmentation_metrics.monai_metrics import (
     HAUSDORFF95,
     normalized_surface_dice_metric,
     NSD,
+    average_surface_distance_metric,
+    ASSD,
 )
 
 
@@ -124,3 +126,24 @@ class TestNormalizedSurfaceDiceMetricBuilder:
 
     def test_default_constant(self):
         assert NSD.name == "nsd"
+
+
+class TestAverageSurfaceDistanceMetricBuilder:
+    def test_returns_metric_spec(self):
+        spec = average_surface_distance_metric()
+        assert spec.name == "assd"
+        assert spec.direction == "lower_is_better"
+        assert spec.reference is True
+        assert spec.channels == "gray"
+        assert spec.builtin is False
+        assert spec.domain == "medical (MONAI)"
+
+    def test_identical_masks_score_zero_distance(self):
+        spec = average_surface_distance_metric()
+        metric = spec.factory()
+        pred, _ = _binary_batch(n=2)
+        scores = metric(pred, pred.clone())
+        assert all(s == pytest.approx(0.0) for s in scores)
+
+    def test_default_constant(self):
+        assert ASSD.name == "assd"
