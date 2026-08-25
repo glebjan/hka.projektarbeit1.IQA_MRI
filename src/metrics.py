@@ -138,6 +138,14 @@ def _pyiqa_factory(name: str, **kwargs) -> Callable[[], Metric]:
     return lambda: PyIQAMetric(name, **kwargs)
 
 
+# Imported here (rather than alongside the other module-level imports above)
+# to avoid a circular import: monai_metrics.py does `from metrics import
+# MetricSpec`, which requires MetricSpec to already be defined in this module.
+from segmentation_metrics.monai_metrics import (
+    DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY,
+)
+
+
 # Full-reference metrics (need a target image)
 PSNR              = MetricSpec("psnr",              "higher_is_better", True,  "gray", _pyiqa_factory("psnr"))
 SSIM              = MetricSpec("ssim",              "higher_is_better", True,  "gray", _pyiqa_factory("ssim"))
@@ -155,4 +163,10 @@ NIQE              = MetricSpec("niqe",              "lower_is_better",  False, "
 BUILTIN_METRICS = (
     PSNR, SSIM, LPIPS, DISTS, RADIMAGENET_LPIPS,
     CLIPIQA, CLIP_IQA_LUNG, CLIP_IQA_BRAIN, BRISQUE, NIQE,
+)
+
+# MONAI-backed segmentation-quality metrics (evaluate masks, not images) —
+# kept separate from BUILTIN_METRICS so main.py's raw-image CLI is unaffected.
+SEGMENTATION_METRICS = (
+    DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY,
 )

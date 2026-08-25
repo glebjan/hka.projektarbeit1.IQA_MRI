@@ -11,7 +11,10 @@ from metrics import (
     registry,
     _pyiqa_factory,
     BUILTIN_METRICS,
+    SEGMENTATION_METRICS,
 )
+
+from segmentation_metrics.monai_metrics import DICE as _DICE  # sanity: same objects re-exported
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +237,54 @@ class TestBuiltinMetrics:
         names = {s.name for s in isolated_registry.specs}
         for name in self.EXPECTED:
             assert name in names, f"'{name}' missing after explicit registration"
+
+
+# ---------------------------------------------------------------------------
+# Segmentation metrics (MONAI-backed)
+# ---------------------------------------------------------------------------
+
+class TestSegmentationMetrics:
+    EXPECTED = {
+        "dice":              ("higher_is_better", True, "gray"),
+        "hausdorff95":       ("lower_is_better",  True, "gray"),
+        "nsd":               ("higher_is_better", True, "gray"),
+        "assd":              ("lower_is_better",  True, "gray"),
+        "panoptic_quality":  ("higher_is_better", True, "gray"),
+    }
+
+    def test_not_registered_by_default(self):
+        names = {s.name for s in registry.specs}
+        assert not (set(self.EXPECTED) & names)
+
+    def test_all_names_present_in_bundle(self):
+        names = {s.name for s in SEGMENTATION_METRICS}
+        for name in self.EXPECTED:
+            assert name in names, f"'{name}' missing from SEGMENTATION_METRICS"
+
+    def test_kept_out_of_builtin_metrics(self):
+        names = {s.name for s in BUILTIN_METRICS}
+        assert not (set(self.EXPECTED) & names)
+
+    @pytest.mark.parametrize("name,attrs", EXPECTED.items())
+    def test_spec_attributes(self, name, attrs):
+        direction, reference, channels = attrs
+        spec = next(s for s in SEGMENTATION_METRICS if s.name == name)
+        assert spec.direction == direction, f"{name}: direction mismatch"
+        assert spec.reference == reference, f"{name}: reference mismatch"
+        assert spec.channels  == channels,  f"{name}: channels mismatch"
+        assert spec.builtin   is False,     f"{name}: should not be builtin"
+        assert spec.domain    == "medical (MONAI)"
+        assert spec.description  # non-empty
+
+    def test_register_opts_in(self, isolated_registry):
+        isolated_registry.register(*SEGMENTATION_METRICS)
+        names = {s.name for s in isolated_registry.specs}
+        for name in self.EXPECTED:
+            assert name in names, f"'{name}' missing after explicit registration"
+
+    def test_metrics_module_reexports_same_objects(self):
+        from metrics import DICE
+        assert DICE is _DICE
 
 
 # ---------------------------------------------------------------------------
