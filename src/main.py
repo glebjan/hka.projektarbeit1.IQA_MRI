@@ -6,7 +6,11 @@ from constants import REPORT
 from evaluation_result import EvaluationResult, _EvaluatedImage
 from image_loader import ImageLoader, find_matching_target, list_images
 from iqa_evaluator import IQAEvaluator
-from metrics import DEVICE, Metric, MetricSpec, registry, register_metric  # noqa: F401 — re-exported for users
+from metrics import (  # noqa: F401 — re-exported for users
+    DEVICE, Metric, MetricSpec, registry, register_metric,
+    PSNR, SSIM, LPIPS, DISTS, RADIMAGENET_LPIPS,
+    CLIPIQA, CLIP_IQA_LUNG, CLIP_IQA_BRAIN, BRISQUE, NIQE, BUILTIN_METRICS,
+)
 
 # ---------------------------------------------------------------------------
 # Top-level evaluation function
@@ -79,6 +83,10 @@ def evaluate(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # TODO: Beispiel wie dieses Framework richtig eingesetzt werden soll. BUILTIN_METRICS durch richtige Usecases ersetzten und demonstrieren wie die Evaluation korrekt durchgeführt wird.
+
+    registry.register(*BUILTIN_METRICS) # Select Metrics by adding to registry
+
     parser = argparse.ArgumentParser(description="Compute IQA metrics and write a report.")
     parser.add_argument("input", type=Path, help="Input image file or directory.")
     parser.add_argument(
@@ -86,6 +94,10 @@ def main() -> None:
         help="Optional reference image file or directory (omit for NR-only evaluation).",
     )
     args = parser.parse_args()
+
+    # CLI-Call: python main.py <input> [target]
+
+
     result = evaluate(args.input, args.target)
     report = result.generate_report(REPORT)
     print(report.describe())

@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from records import ImageEvaluatorRecord, _record_metric_value, best_slice_per_metric
-from metrics import MetricSpec, MetricRegistry
+from metrics import MetricSpec, MetricRegistry, PSNR, LPIPS
 
 
 # ---------------------------------------------------------------------------
@@ -79,32 +79,38 @@ def _make_records(values: dict[str, list]) -> list[ImageEvaluatorRecord]:
 
 class TestBestSlicePerMetric:
     def test_higher_is_better_selects_max(self, isolated_registry):
+        isolated_registry.register(PSNR)
         records = _make_records({"psnr": [20.0, 35.0, 28.0]})
         best = best_slice_per_metric(records)
         assert best["psnr"] == 1  # index with value 35.0
 
     def test_lower_is_better_selects_min(self, isolated_registry):
+        isolated_registry.register(LPIPS)
         records = _make_records({"lpips": [0.8, 0.1, 0.5]})
         best = best_slice_per_metric(records)
         assert best["lpips"] == 1  # index with value 0.1
 
     def test_empty_slices_skipped(self, isolated_registry):
+        isolated_registry.register(PSNR)
         records = _make_records({"psnr": [10.0, 40.0, 30.0]})
         records[1].is_empty = True  # best would be index 1 but it's empty
         best = best_slice_per_metric(records)
         assert best["psnr"] == 2  # next best
 
     def test_none_values_ignored(self, isolated_registry):
+        isolated_registry.register(PSNR)
         records = _make_records({"psnr": [None, 35.0, None]})
         best = best_slice_per_metric(records)
         assert best["psnr"] == 1
 
     def test_all_none_metric_excluded(self, isolated_registry):
+        isolated_registry.register(PSNR)
         records = _make_records({"psnr": [None, None]})
         best = best_slice_per_metric(records)
         assert "psnr" not in best
 
     def test_all_empty_excluded(self, isolated_registry):
+        isolated_registry.register(PSNR)
         records = _make_records({"psnr": [30.0, 40.0]})
         for r in records:
             r.is_empty = True

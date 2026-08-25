@@ -7,6 +7,10 @@ writing a new adapter class; IQAEvaluator is untouched.
 
 To add a custom metric without touching main.py or pyiqa, call
 `register_metric()` with an object implementing `Metric`.
+
+Built-in metrics (below) are exposed as `MetricSpec` constants (`PSNR`,
+`SSIM`, ...) — nothing is registered until the caller opts in by calling
+`registry.register(...)` with the ones they want.
 """
 
 from dataclasses import dataclass, field
@@ -81,9 +85,10 @@ class MetricRegistry:
         self._specs: dict[str, MetricSpec] = {}
         self._cache: dict[str, Metric] = {}
 
-    def register(self, spec: MetricSpec) -> None:
-        self._specs[spec.name] = spec
-        self._cache.pop(spec.name, None)
+    def register(self, *specs: MetricSpec) -> None:
+        for spec in specs:
+            self._specs[spec.name] = spec
+            self._cache.pop(spec.name, None)
 
     def get_metric(self, name: str) -> Metric:
         if name not in self._cache:
@@ -127,20 +132,21 @@ def _pyiqa_factory(name: str, **kwargs) -> Callable[[], Metric]:
     return lambda: PyIQAMetric(name, **kwargs)
 
 
-_BUILTIN_SPECS: list[MetricSpec] = [
-    # Full-reference metrics
-    MetricSpec("psnr",              "higher_is_better", True,  "gray", _pyiqa_factory("psnr")),
-    MetricSpec("ssim",              "higher_is_better", True,  "gray", _pyiqa_factory("ssim")),
-    MetricSpec("lpips",             "lower_is_better",  True,  "rgb",  _pyiqa_factory("lpips")),
-    MetricSpec("dists",             "lower_is_better",  True,  "rgb",  _pyiqa_factory("dists")),
-    MetricSpec("radimagenet_lpips", "lower_is_better",  True,  "rgb",  _pyiqa_factory("radimagenet_lpips", backbone_path=str(RESNET50))),
-    # No-reference metrics
-    MetricSpec("clipiqa",           "higher_is_better", False, "rgb",  _pyiqa_factory("clipiqa")),
-    MetricSpec("clip_iqa_lung",     "higher_is_better", False, "rgb",  _pyiqa_factory("clip_iqa_lung")),
-    MetricSpec("clip_iqa_brain",    "higher_is_better", False, "rgb",  _pyiqa_factory("clip_iqa_brain")),
-    MetricSpec("brisque",           "lower_is_better",  False, "rgb",  _pyiqa_factory("brisque")),
-    MetricSpec("niqe",              "lower_is_better",  False, "rgb",  _pyiqa_factory("niqe")),
-]
+# Full-reference metrics (need a target image)
+PSNR              = MetricSpec("psnr",              "higher_is_better", True,  "gray", _pyiqa_factory("psnr"))
+SSIM              = MetricSpec("ssim",              "higher_is_better", True,  "gray", _pyiqa_factory("ssim"))
+LPIPS             = MetricSpec("lpips",             "lower_is_better",  True,  "rgb",  _pyiqa_factory("lpips"))
+DISTS             = MetricSpec("dists",             "lower_is_better",  True,  "rgb",  _pyiqa_factory("dists"))
+RADIMAGENET_LPIPS = MetricSpec("radimagenet_lpips", "lower_is_better",  True,  "rgb",  _pyiqa_factory("radimagenet_lpips", backbone_path=str(RESNET50)))
+# No-reference metrics
+CLIPIQA           = MetricSpec("clipiqa",           "higher_is_better", False, "rgb",  _pyiqa_factory("clipiqa"))
+CLIP_IQA_LUNG     = MetricSpec("clip_iqa_lung",     "higher_is_better", False, "rgb",  _pyiqa_factory("clip_iqa_lung"))
+CLIP_IQA_BRAIN    = MetricSpec("clip_iqa_brain",    "higher_is_better", False, "rgb",  _pyiqa_factory("clip_iqa_brain"))
+BRISQUE           = MetricSpec("brisque",           "lower_is_better",  False, "rgb",  _pyiqa_factory("brisque"))
+NIQE              = MetricSpec("niqe",              "lower_is_better",  False, "rgb",  _pyiqa_factory("niqe"))
 
-for _spec in _BUILTIN_SPECS:
-    registry.register(_spec)
+# Convenience bundle for "just register everything" — not registered by default.
+BUILTIN_METRICS = (
+    PSNR, SSIM, LPIPS, DISTS, RADIMAGENET_LPIPS,
+    CLIPIQA, CLIP_IQA_LUNG, CLIP_IQA_BRAIN, BRISQUE, NIQE,
+)

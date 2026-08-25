@@ -14,6 +14,7 @@ from mask_writer import (
 )
 from records import ImageEvaluatorRecord
 from image_loader import ImageLoader
+from metrics import PSNR
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +136,8 @@ class TestMaskWriter:
             records.append(rec)
         return records
 
-    def test_pngs_created(self, tmp_path):
+    def test_pngs_created(self, tmp_path, isolated_registry):
+        isolated_registry.register(PSNR)
         n = 3
         loader = self._make_loader_multislice(n, tmp_path)
         records = self._make_records_with_scores(n=n)
@@ -145,7 +147,8 @@ class TestMaskWriter:
         for p in saved:
             assert p.exists()
 
-    def test_naming_scheme(self, tmp_path):
+    def test_naming_scheme(self, tmp_path, isolated_registry):
+        isolated_registry.register(PSNR)
         arr = (np.random.default_rng(0).random((96, 96)) * 200).astype("uint8")
         loader = self._make_loader_from_array(arr, tmp_path)
         records = self._make_records_with_scores(n=1)
@@ -159,7 +162,8 @@ class TestMaskWriter:
             assert name.endswith(".png")
             assert "_s0" in name   # slice index part
 
-    def test_three_files_per_metric(self, tmp_path):
+    def test_three_files_per_metric(self, tmp_path, isolated_registry):
+        isolated_registry.register(PSNR)
         arr = (np.random.default_rng(0).random((96, 96)) * 200).astype("uint8")
         loader = self._make_loader_from_array(arr, tmp_path)
         # Single record with one builtin metric filled

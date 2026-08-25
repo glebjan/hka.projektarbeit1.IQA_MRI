@@ -8,7 +8,7 @@ from PIL import Image
 
 import main as main_module
 from evaluation_result import EvaluationResult
-from metrics import registry
+from metrics import registry, PSNR, SSIM
 
 
 # ---------------------------------------------------------------------------
@@ -25,12 +25,13 @@ def _make_png(path: Path, seed: int = 0) -> Path:
 
 
 def _restrict_to_fast(reg):
-    """Remove all but psnr+ssim to avoid slow/network metrics during main tests."""
-    keep = {"psnr", "ssim"}
-    for name in [s.name for s in reg.specs]:
-        if name not in keep:
-            reg._specs.pop(name, None)
-            reg._cache.pop(name, None)
+    """Register only psnr+ssim to avoid slow/network metrics during main tests.
+
+    `evaluate()` itself registers nothing (only `main()`'s CLI path does), so
+    tests exercising `evaluate()` directly must opt in to metrics explicitly,
+    same as any other library consumer would.
+    """
+    reg.register(PSNR, SSIM)
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +143,9 @@ class TestEvaluateDirectory:
 
 class TestMainCLI:
     def test_cli_writes_report(self, tmp_path, isolated_registry, monkeypatch, capsys):
-        _restrict_to_fast(isolated_registry)
+        # main() always registers main.BUILTIN_METRICS itself — patch that
+        # bundle down to psnr+ssim rather than pre-seeding the registry.
+        monkeypatch.setattr("main.BUILTIN_METRICS", (PSNR, SSIM))
         inp = _make_png(tmp_path / "inp.png")
         report = tmp_path / "report.csv"
 
@@ -155,7 +158,7 @@ class TestMainCLI:
         assert report.exists()
 
     def test_cli_with_target(self, tmp_path, isolated_registry, monkeypatch, capsys):
-        _restrict_to_fast(isolated_registry)
+        monkeypatch.setattr("main.BUILTIN_METRICS", (PSNR, SSIM))
         inp = _make_png(tmp_path / "inp.png", seed=0)
         tgt = _make_png(tmp_path / "tgt.png", seed=1)
         report = tmp_path / "report.csv"

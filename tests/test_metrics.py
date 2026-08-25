@@ -10,6 +10,7 @@ from metrics import (
     register_metric,
     registry,
     _pyiqa_factory,
+    BUILTIN_METRICS,
 )
 
 
@@ -192,10 +193,10 @@ class TestPyIQAMetricLPIPS:
 
 
 # ---------------------------------------------------------------------------
-# Built-in registry: all 10 expected metrics registered
+# Built-in metric specs: exposed as constants, not auto-registered
 # ---------------------------------------------------------------------------
 
-class TestBuiltinRegistry:
+class TestBuiltinMetrics:
     EXPECTED = {
         "psnr":               ("higher_is_better", True,  "gray"),
         "ssim":               ("higher_is_better", True,  "gray"),
@@ -209,16 +210,27 @@ class TestBuiltinRegistry:
         "niqe":               ("lower_is_better",  False, "rgb"),
     }
 
-    def test_all_names_registered(self):
+    def test_not_registered_by_default(self):
+        # Importing metrics.py must not have side-registered anything globally.
         names = {s.name for s in registry.specs}
+        assert not (set(self.EXPECTED) & names)
+
+    def test_all_names_present_in_bundle(self):
+        names = {s.name for s in BUILTIN_METRICS}
         for name in self.EXPECTED:
-            assert name in names, f"'{name}' missing from registry"
+            assert name in names, f"'{name}' missing from BUILTIN_METRICS"
 
     @pytest.mark.parametrize("name,attrs", EXPECTED.items())
     def test_spec_attributes(self, name, attrs):
         direction, reference, channels = attrs
-        spec = next(s for s in registry.specs if s.name == name)
+        spec = next(s for s in BUILTIN_METRICS if s.name == name)
         assert spec.direction == direction,  f"{name}: direction mismatch"
         assert spec.reference == reference,  f"{name}: reference mismatch"
         assert spec.channels  == channels,   f"{name}: channels mismatch"
         assert spec.builtin   is True,       f"{name}: should be builtin"
+
+    def test_register_opts_in(self, isolated_registry):
+        isolated_registry.register(*BUILTIN_METRICS)
+        names = {s.name for s in isolated_registry.specs}
+        for name in self.EXPECTED:
+            assert name in names, f"'{name}' missing after explicit registration"

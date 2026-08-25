@@ -4,7 +4,7 @@ import pytest
 
 from image_loader import ImageLoader
 from iqa_evaluator import IQAEvaluator, BATCH_SIZE
-from metrics import MetricSpec, register_metric, registry
+from metrics import MetricSpec, register_metric, registry, PSNR, SSIM
 from records import ImageEvaluatorRecord
 
 
@@ -150,12 +150,8 @@ class TestComputeBatch:
 
 class TestRunEvaluation:
     def _psnr_ssim_registry(self, isolated_registry):
-        """Restrict registry to psnr + ssim for fast real-metric tests."""
-        keep = {"psnr", "ssim"}
-        for name in [s.name for s in isolated_registry.specs]:
-            if name not in keep:
-                isolated_registry._specs.pop(name, None)
-                isolated_registry._cache.pop(name, None)
+        """Register psnr + ssim for fast real-metric tests."""
+        isolated_registry.register(PSNR, SSIM)
         return isolated_registry
 
     def test_record_count_equals_slices(self, isolated_registry, synthetic_png):

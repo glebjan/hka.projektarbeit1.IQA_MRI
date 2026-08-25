@@ -77,14 +77,10 @@ class TestGenerateReport:
 
         from image_loader import ImageLoader
         from iqa_evaluator import IQAEvaluator
-        from metrics import registry
+        from metrics import registry, PSNR, SSIM
 
-        # Keep only fast metrics for report test
-        keep = {"psnr", "ssim"}
-        for name in [s.name for s in registry.specs]:
-            if name not in keep:
-                registry._specs.pop(name, None)
-                registry._cache.pop(name, None)
+        # Register only fast metrics for report test
+        registry.register(PSNR, SSIM)
 
         arr = (np.random.default_rng(5).random((96, 96)) * 255).astype("uint8")
         inp_p = tmp_path / "inp.png"; tgt_p = tmp_path / "tgt.png"
