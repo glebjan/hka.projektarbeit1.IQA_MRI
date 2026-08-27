@@ -7,10 +7,11 @@ from PIL import Image
 
 from evaluation_result import EvaluationResult, _EvaluatedImage
 from records import ImageEvaluatorRecord
-from metrics import register_metric
+from metrics import MetricRegistry, PSNR, SSIM
 
 
-def _make_result(n_images: int = 2, slices_each: int = 2) -> EvaluationResult:
+def _make_result(n_images: int = 2, slices_each: int = 2,
+                 registry: MetricRegistry | None = None) -> EvaluationResult:
     """Build an EvaluationResult with fake ImageLoader paths and records."""
     images = []
     for i in range(n_images):
@@ -24,7 +25,7 @@ def _make_result(n_images: int = 2, slices_each: int = 2) -> EvaluationResult:
             for j in range(slices_each)
         ]
         images.append(_EvaluatedImage(input_path=Path(f"/fake/img{i}.png"), records=records))
-    return EvaluationResult(images)
+    return EvaluationResult(images, registry if registry is not None else MetricRegistry())
 
 
 # ---------------------------------------------------------------------------
@@ -49,13 +50,14 @@ class TestToFrame:
         df = res.to_frame()
         assert "extra" not in df.columns
 
-    def test_custom_metric_column(self, isolated_registry, fake_metric):
-        register_metric("frame_custom", fake_metric, direction="higher_is_better", reference=False)
-        images = []
+    def test_custom_metric_column(self, fake_metric):
+        reg = MetricRegistry()
+        reg.register_metric("frame_custom", fake_metric,
+                            direction="higher_is_better", reference=False)
         rec = ImageEvaluatorRecord(image_id="t", slice_index=0)
         rec.extra["frame_custom"] = 0.7
-        images.append(_EvaluatedImage(input_path=Path("/fake/t.png"), records=[rec]))
-        res = EvaluationResult(images)
+        images = [_EvaluatedImage(input_path=Path("/fake/t.png"), records=[rec])]
+        res = EvaluationResult(images, reg)
         df = res.to_frame()
         assert "frame_custom" in df.columns
 
@@ -72,15 +74,10 @@ class TestToFrame:
 class TestGenerateReport:
     def _build_result_from_real_image(self, tmp_path: Path) -> EvaluationResult:
         """Create a minimal real EvaluationResult from a synthetic PNG."""
-        import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
         from image_loader import ImageLoader
         from iqa_evaluator import IQAEvaluator
-        from metrics import registry, PSNR, SSIM
 
-        # Register only fast metrics for report test
-        registry.register(PSNR, SSIM)
+        reg = MetricRegistry(PSNR, SSIM)   # fast metrics only
 
         arr = (np.random.default_rng(5).random((96, 96)) * 255).astype("uint8")
         inp_p = tmp_path / "inp.png"; tgt_p = tmp_path / "tgt.png"
@@ -88,36 +85,32 @@ class TestGenerateReport:
         noise = np.clip(arr.astype(int) + 5, 0, 255).astype("uint8")
         Image.fromarray(noise).save(tgt_p)
 
-        from image_loader import ImageLoader
         inp = ImageLoader(inp_p); tgt = ImageLoader(tgt_p)
-        records = IQAEvaluator(inp, tgt).run_evaluation()
-        return EvaluationResult([_EvaluatedImage(input_path=inp_p, records=records)])
+        records = IQAEvaluator(inp, tgt, reg).run_evaluation()
+        return EvaluationResult([_EvaluatedImage(input_path=inp_p, records=records)], reg)
 
-    def test_csv_written(self, tmp_path, isolated_registry):
+    def test_csv_written(self, tmp_path):
         res = self._build_result_from_real_image(tmp_path)
         csv_path = tmp_path / "report.csv"
-        mask_dir = tmp_path / "masks"
-        df = res.generate_report(csv_path, mask_dir)
+        res.generate_report(csv_path)
         assert csv_path.exists()
 
-    def test_csv_has_correct_columns(self, tmp_path, isolated_registry):
+    def test_csv_has_correct_columns(self, tmp_path):
         res = self._build_result_from_real_image(tmp_path)
         csv_path = tmp_path / "report.csv"
-        df = res.generate_report(csv_path, tmp_path / "masks")
+        res.generate_report(csv_path)
         import pandas as pd
         loaded = pd.read_csv(csv_path)
         assert "image_id" in loaded.columns
         assert "psnr" in loaded.columns
 
-    def test_mask_pngs_written(self, tmp_path, isolated_registry):
-        res = self._build_result_from_real_image(tmp_path)
-        mask_dir = tmp_path / "masks"
-        res.generate_report(tmp_path / "rep.csv", mask_dir)
-        pngs = list(mask_dir.rglob("*.png"))
-        assert len(pngs) > 0
-
-    def test_returns_dataframe_equal_to_to_frame(self, tmp_path, isolated_registry):
+    def test_returns_dataframe_equal_to_to_frame(self, tmp_path):
         res = self._build_result_from_real_image(tmp_path)
         df_direct = res.to_frame()
-        df_report = res.generate_report(tmp_path / "r.csv", tmp_path / "m")
+        df_report = res.generate_report(tmp_path / "r.csv")
         assert list(df_direct["image_id"]) == list(df_report["image_id"])
+
+    def test_no_mask_dir_created(self, tmp_path):
+        res = self._build_result_from_real_image(tmp_path)
+        res.generate_report(tmp_path / "r.csv")
+        assert not (tmp_path / "masks").exists()
