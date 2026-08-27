@@ -7,9 +7,10 @@ from evaluation_result import EvaluationResult, _EvaluatedImage
 from image_loader import ImageLoader, find_matching_target, list_images
 from iqa_evaluator import IQAEvaluator
 from metrics import (  # noqa: F401 — re-exported for users
-    DEVICE, Metric, MetricSpec, registry, register_metric,
+    DEVICE, Metric, MetricSpec, MetricRegistry,
     PSNR, SSIM, LPIPS, DISTS, RADIMAGENET_LPIPS,
     CLIPIQA, CLIP_IQA_LUNG, CLIP_IQA_BRAIN, BRISQUE, NIQE, BUILTIN_METRICS,
+    DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY, SEGMENTATION_METRICS,
 )
 
 # ---------------------------------------------------------------------------
@@ -19,13 +20,18 @@ from metrics import (  # noqa: F401 — re-exported for users
 def evaluate(
     input_path: Path,
     target_path: Optional[Path] = None,
+    *,
+    registry: MetricRegistry,
 ) -> EvaluationResult:
-    """Discover input/target images and compute all IQA metrics.
+    """Discover input/target images and compute one registry's metrics.
 
     Args:
         input_path:  Path to an input image file or a directory of images.
         target_path: Optional path to a reference image file or directory.
                      Pass None for a no-reference (NR-only) evaluation.
+        registry:    The metrics to compute. One instance is shared across
+                     every image in the run, so network-backed metrics are
+                     built once rather than once per image.
 
     No files are written; use EvaluationResult.generate_report() for output.
     """
@@ -39,7 +45,7 @@ def evaluate(
             if tgt is not None:
                 target_loader = ImageLoader(tgt)
                 target_loader.log_tensor_shape()
-            records = IQAEvaluator(input_loader, target_loader).run_evaluation()
+            records = IQAEvaluator(input_loader, target_loader, registry).run_evaluation()
             evaluated.append(_EvaluatedImage(input_path=inp, records=records))
         except Exception as exc:
             print(f"[{inp}] evaluation failed: {exc}")
@@ -75,7 +81,7 @@ def evaluate(
     else:
         print(f"No input file or directory at {input_path}")
 
-    return EvaluationResult(evaluated)
+    return EvaluationResult(evaluated, registry)
 
 
 # ---------------------------------------------------------------------------
@@ -83,11 +89,6 @@ def evaluate(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    # TODO: Beispiel wie dieses Framework richtig eingesetzt werden soll. BUILTIN_METRICS durch richtige Usecases ersetzten und demonstrieren wie die Evaluation korrekt durchgeführt wird.
-
-    registry.register(*BUILTIN_METRICS) # Select Metrics by adding to registry
-    
-
     parser = argparse.ArgumentParser(description="Compute IQA metrics and write a report.")
     parser.add_argument("input", type=Path, help="Input image file or directory.")
     parser.add_argument(
@@ -96,9 +97,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Reference usage: pick the metrics for this run. Swap BUILTIN_METRICS for
+    # SEGMENTATION_METRICS (or any subset, e.g. MetricRegistry(PSNR, SSIM)) to
+    # evaluate something else — each run owns its own registry.
+    registry = MetricRegistry(*BUILTIN_METRICS)
 
-
-    result = evaluate(args.input, args.target)
+    result = evaluate(args.input, args.target, registry=registry)
     report = result.generate_report(REPORT)
     print(report.describe())
     print(f"Report written: {REPORT}")
