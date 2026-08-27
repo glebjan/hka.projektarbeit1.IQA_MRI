@@ -1,0 +1,75 @@
+classDiagram
+    direction TB
+
+    class ImageLoader {
+        +path: Path
+        +tensor: Tensor (D,1,H,W)
+        +rgb_tensor: Tensor (D,3,H,W)
+        +empty_slice_mask: Tensor
+        +log_tensor_shape()
+    }
+
+    class MetricSpec {
+        <<registry entry>>
+        +name: str
+        +direction: higher|lower
+        +reference: bool
+        +channels: gray|rgb
+    }
+
+    class MetricRegistry {
+        <<static list>>
+        _METRIC_SPECS: list~MetricSpec~
+        _get_metric(name) Module
+    }
+
+    class IQAEvaluator {
+        +input: ImageLoader
+        +target: ImageLoader?
+        +run_evaluation() list~ImageEvaluatorRecord~
+        -_compute_batch(spec, indices)
+    }
+
+    class ImageEvaluatorRecord {
+        +image_id: str
+        +slice_index: int
+        +psnr, ssim, lpips, ...: float?
+        +to_dict()
+    }
+
+    class EvaluationResult {
+        -_images: list~_EvaluatedImage~
+        +to_frame() DataFrame
+        +generate_report(path) DataFrame
+    }
+
+    class MaskWriter {
+        +write(loader, records) list~Path~
+        -_segment_otsu(slice)
+    }
+
+    class evaluate_fn {
+        <<top-level function>>
+        evaluate(input_path, target_path) EvaluationResult
+    }
+
+    class ExternalPyIQAPlugins {
+        <<import side-effect>>
+        RadImageNetLPIPS
+        ClipIQALung
+        ClipIQABrain
+    }
+
+    evaluate_fn ..> ImageLoader : creates
+    evaluate_fn ..> IQAEvaluator : creates
+    evaluate_fn ..> EvaluationResult : returns
+
+    IQAEvaluator --> ImageLoader : reads tensor
+    IQAEvaluator --> MetricRegistry : iterates specs
+    IQAEvaluator --> ImageEvaluatorRecord : produces
+    MetricRegistry o-- MetricSpec : contains
+    MetricRegistry ..> ExternalPyIQAPlugins : resolves via pyiqa.create_metric
+
+    EvaluationResult o-- ImageEvaluatorRecord : holds
+    EvaluationResult --> MaskWriter : delegates PNG output
+    MaskWriter --> ImageEvaluatorRecord : reads best-slice scores
