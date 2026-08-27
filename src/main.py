@@ -86,6 +86,7 @@ def main() -> None:
     # TODO: Beispiel wie dieses Framework richtig eingesetzt werden soll. BUILTIN_METRICS durch richtige Usecases ersetzten und demonstrieren wie die Evaluation korrekt durchgeführt wird.
 
     registry.register(*BUILTIN_METRICS) # Select Metrics by adding to registry
+    
 
     parser = argparse.ArgumentParser(description="Compute IQA metrics and write a report.")
     parser.add_argument("input", type=Path, help="Input image file or directory.")
@@ -95,7 +96,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # CLI-Call: python main.py <input> [target]
 
 
     result = evaluate(args.input, args.target)
