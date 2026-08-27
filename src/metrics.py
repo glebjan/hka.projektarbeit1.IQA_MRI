@@ -5,12 +5,16 @@ pyiqa exists. All pyiqa-specific code (imports, create_metric, tensor
 shape quirks) lives in `PyIQAMetric`. Swapping the IQA backend means
 writing a new adapter class; IQAEvaluator is untouched.
 
+Metrics are held by `MetricRegistry` instances — build one per evaluation
+run and pass it to IQAEvaluator/evaluate(). There is no global registry, so
+an IQA run and a segmentation run never interfere.
+
 To add a custom metric without touching main.py or pyiqa, call
-`register_metric()` with an object implementing `Metric`.
+`MetricRegistry.register_metric()` with an object implementing `Metric`.
 
 Built-in metrics (below) are exposed as `MetricSpec` constants (`PSNR`,
-`SSIM`, ...) — nothing is registered until the caller opts in by calling
-`registry.register(...)` with the ones they want.
+`SSIM`, ...) — nothing is registered until the caller opts in by passing
+them to a registry, e.g. `MetricRegistry(PSNR, SSIM)`.
 """
 
 from dataclasses import dataclass, field
@@ -85,16 +89,44 @@ class PyIQAMetric:
 
 
 class MetricRegistry:
-    """Holds registered MetricSpecs and lazily-instantiated Metric objects."""
+    """Holds registered MetricSpecs and lazily-instantiated Metric objects.
 
-    def __init__(self):
+    Build one instance per evaluation run and pass it explicitly — there is
+    no global registry. Two instances never share specs or cached metric
+    objects, so an IQA run and a segmentation run can proceed side by side:
+
+        iqa = MetricRegistry(*BUILTIN_METRICS)
+        seg = MetricRegistry(*SEGMENTATION_METRICS)
+    """
+
+    def __init__(self, *specs: MetricSpec):
         self._specs: dict[str, MetricSpec] = {}
         self._cache: dict[str, Metric] = {}
+        self.register(*specs)
 
     def register(self, *specs: MetricSpec) -> None:
         for spec in specs:
             self._specs[spec.name] = spec
             self._cache.pop(spec.name, None)
+
+    def register_metric(
+        self,
+        name: str,
+        metric: Metric,
+        *,
+        direction: MetricDirection,
+        reference: bool,
+        channels: MetricChannels = "rgb",
+    ) -> None:
+        """Hook a custom metric into this registry.
+
+        No pyiqa import and no edit to main.py or ImageEvaluatorRecord
+        required. `metric` just needs to implement the Metric protocol. Its
+        scores show up as a column named `name` in the report (via
+        ImageEvaluatorRecord.extra).
+        """
+        self.register(MetricSpec(name, direction, reference, channels,
+                                 factory=lambda: metric, builtin=False))
 
     def get_metric(self, name: str) -> Metric:
         if name not in self._cache:
@@ -108,26 +140,6 @@ class MetricRegistry:
     @property
     def direction(self) -> dict[str, MetricDirection]:
         return {spec.name: spec.direction for spec in self._specs.values()}
-
-
-registry = MetricRegistry()
-
-
-def register_metric(
-    name: str,
-    metric: Metric,
-    *,
-    direction: MetricDirection,
-    reference: bool,
-    channels: MetricChannels = "rgb",
-) -> None:
-    """Hook a custom metric into the evaluation pipeline.
-
-    No pyiqa import, no editing main.py or ImageEvaluatorRecord required.
-    `metric` just needs to implement the Metric protocol. Its scores show
-    up as a column named `name` in the report (via ImageEvaluatorRecord.extra).
-    """
-    registry.register(MetricSpec(name, direction, reference, channels, factory=lambda: metric, builtin=False))
 
 
 # ---------------------------------------------------------------------------
