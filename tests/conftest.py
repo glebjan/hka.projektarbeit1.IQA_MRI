@@ -52,26 +52,6 @@ def input_target_pair(tmp_path: Path):
     return inp, tgt
 
 
-# ---------------------------------------------------------------------------
-# Registry isolation fixture
-# ---------------------------------------------------------------------------
-
-@pytest.fixture()
-def isolated_registry():
-    """Yield the global registry with its original state restored afterwards.
-
-    Prevents registry-mutating tests from affecting each other.
-    """
-    from metrics import registry
-    import copy
-
-    saved_specs = dict(registry._specs)
-    saved_cache = dict(registry._cache)
-    yield registry
-    registry._specs = saved_specs
-    registry._cache = saved_cache
-
-
 @pytest.fixture()
 def fake_metric():
     """A minimal Metric-protocol-compatible callable (no network)."""

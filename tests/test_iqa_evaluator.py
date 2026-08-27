@@ -4,7 +4,7 @@ import pytest
 
 from image_loader import ImageLoader
 from iqa_evaluator import IQAEvaluator, BATCH_SIZE
-from metrics import MetricSpec, register_metric, registry
+from metrics import MetricRegistry, MetricSpec, PSNR, SSIM
 from records import ImageEvaluatorRecord
 
 
@@ -38,18 +38,24 @@ class TestIQAEvaluatorInit:
         inp = _make_loader(2, 64, 64)
         tgt = _make_loader(2, 32, 32)   # Different spatial size
         with pytest.raises(ValueError, match="shape mismatch"):
-            IQAEvaluator(inp, tgt)
+            IQAEvaluator(inp, tgt, MetricRegistry())
 
     def test_matching_shapes_ok(self):
         inp = _make_loader(2, 64, 64)
         tgt = _make_loader(2, 64, 64)
-        ev = IQAEvaluator(inp, tgt)
+        ev = IQAEvaluator(inp, tgt, MetricRegistry())
         assert ev.input is inp and ev.target is tgt
 
     def test_no_target_ok(self):
         inp = _make_loader(3)
-        ev = IQAEvaluator(inp, None)
+        ev = IQAEvaluator(inp, None, MetricRegistry())
         assert ev.target is None
+
+    def test_registry_is_stored(self):
+        inp = _make_loader(2)
+        reg = MetricRegistry(PSNR)
+        ev = IQAEvaluator(inp, None, reg)
+        assert ev.registry is reg
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +65,7 @@ class TestIQAEvaluatorInit:
 class TestPickTensorBatch:
     def test_gray_channel(self):
         loader = _make_loader(5)
-        ev = IQAEvaluator(loader, None)
+        ev = IQAEvaluator(loader, None, MetricRegistry())
         batch = ev._pick_tensor_batch(loader, "gray", [0, 2, 4])
         assert batch.shape == (3, 1, 64, 64)
         assert torch.equal(batch[0], loader.tensor[0])
@@ -67,7 +73,7 @@ class TestPickTensorBatch:
 
     def test_rgb_channel(self):
         loader = _make_loader(3)
-        ev = IQAEvaluator(loader, None)
+        ev = IQAEvaluator(loader, None, MetricRegistry())
         batch = ev._pick_tensor_batch(loader, "rgb", [1, 2])
         # rgb_tensor expands to 3 channels
         assert batch.shape == (2, 3, 64, 64)
@@ -81,14 +87,14 @@ class TestFormatSliceId:
     def test_without_model(self):
         loader = _make_loader()
         loader.path = _FakePath("patient_001.png")
-        ev = IQAEvaluator(loader, None)
+        ev = IQAEvaluator(loader, None, MetricRegistry())
         assert ev._format_slice_id(0)  == "patient_001_s000"
         assert ev._format_slice_id(42) == "patient_001_s042"
 
     def test_with_model_prefix(self):
         loader = _make_loader()
         loader.path = _FakePath("patient_001.png")
-        ev = IQAEvaluator(loader, None, source_model="UNet")
+        ev = IQAEvaluator(loader, None, MetricRegistry(), source_model="UNet")
         assert ev._format_slice_id(3) == "UNet/patient_001_s003"
 
 
@@ -97,20 +103,21 @@ class TestFormatSliceId:
 # ---------------------------------------------------------------------------
 
 class TestComputeBatch:
-    def test_exception_in_metric_returns_nones(self, isolated_registry, capsys):
+    def test_exception_in_metric_returns_nones(self, capsys):
         def bad_metric(inp, tgt=None):
             raise RuntimeError("simulated failure")
 
         spec = MetricSpec("bad", "higher_is_better", False, "gray",
                           lambda: bad_metric, builtin=False)
-        isolated_registry.register(spec)
+        reg = MetricRegistry()
+        reg.register(spec)
 
         loader = _make_loader(3)
-        ev = IQAEvaluator(loader, None)
+        ev = IQAEvaluator(loader, None, reg)
         result = ev._compute_batch(spec, [0, 1, 2])
         assert result == [None, None, None]
 
-    def test_full_reference_batch_uses_target(self, isolated_registry):
+    def test_full_reference_batch_uses_target(self):
         received = {}
 
         def capturing_metric(inp, tgt=None):
@@ -119,15 +126,16 @@ class TestComputeBatch:
 
         spec = MetricSpec("capture", "higher_is_better", True, "gray",
                           lambda: capturing_metric, builtin=False)
-        isolated_registry.register(spec)
+        reg = MetricRegistry()
+        reg.register(spec)
 
         inp = _make_loader(2)
         tgt = _make_loader(2)
-        ev = IQAEvaluator(inp, tgt)
+        ev = IQAEvaluator(inp, tgt, reg)
         ev._compute_batch(spec, [0, 1])
         assert received["tgt"] is not None
 
-    def test_no_reference_batch_no_target_passed(self, isolated_registry):
+    def test_no_reference_batch_no_target_passed(self):
         received = {}
 
         def capturing_metric(inp, tgt=None):
@@ -136,10 +144,11 @@ class TestComputeBatch:
 
         spec = MetricSpec("capture_nr", "higher_is_better", False, "gray",
                           lambda: capturing_metric, builtin=False)
-        isolated_registry.register(spec)
+        reg = MetricRegistry()
+        reg.register(spec)
 
         loader = _make_loader(2)
-        ev = IQAEvaluator(loader, None)
+        ev = IQAEvaluator(loader, None, reg)
         ev._compute_batch(spec, [0, 1])
         assert received["tgt"] is None
 
@@ -149,72 +158,65 @@ class TestComputeBatch:
 # ---------------------------------------------------------------------------
 
 class TestRunEvaluation:
-    def _psnr_ssim_registry(self, isolated_registry):
-        """Restrict registry to psnr + ssim for fast real-metric tests."""
-        keep = {"psnr", "ssim"}
-        for name in [s.name for s in isolated_registry.specs]:
-            if name not in keep:
-                isolated_registry._specs.pop(name, None)
-                isolated_registry._cache.pop(name, None)
-        return isolated_registry
+    def _psnr_ssim_registry(self) -> MetricRegistry:
+        """Registry with psnr + ssim for fast real-metric tests."""
+        return MetricRegistry(PSNR, SSIM)
 
-    def test_record_count_equals_slices(self, isolated_registry, synthetic_png):
-        self._psnr_ssim_registry(isolated_registry)
+    def test_record_count_equals_slices(self, synthetic_png):
+        reg = self._psnr_ssim_registry()
         loader = ImageLoader(synthetic_png)
-        ev = IQAEvaluator(loader, None)
+        ev = IQAEvaluator(loader, None, reg)
         records = ev.run_evaluation()
         assert len(records) == loader.tensor.shape[0]
 
-    def test_fr_metrics_none_when_no_target(self, isolated_registry, synthetic_png):
-        self._psnr_ssim_registry(isolated_registry)
+    def test_fr_metrics_none_when_no_target(self, synthetic_png):
+        reg = self._psnr_ssim_registry()
         loader = ImageLoader(synthetic_png)
-        ev = IQAEvaluator(loader, None)
+        ev = IQAEvaluator(loader, None, reg)
         records = ev.run_evaluation()
         for rec in records:
             assert rec.psnr is None
             assert rec.ssim is None
 
-    def test_fr_metrics_filled_with_target(self, isolated_registry, input_target_pair):
-        self._psnr_ssim_registry(isolated_registry)
+    def test_fr_metrics_filled_with_target(self, input_target_pair):
+        reg = self._psnr_ssim_registry()
         inp_path, tgt_path = input_target_pair
         inp = ImageLoader(inp_path)
         tgt = ImageLoader(tgt_path)
-        ev = IQAEvaluator(inp, tgt)
+        ev = IQAEvaluator(inp, tgt, reg)
         records = ev.run_evaluation()
         active = [r for r in records if not r.is_empty]
         assert all(r.psnr is not None for r in active)
         assert all(r.ssim is not None for r in active)
 
-    def test_empty_slices_have_no_metric_values(self, isolated_registry):
-        self._psnr_ssim_registry(isolated_registry)
+    def test_empty_slices_have_no_metric_values(self):
+        reg = self._psnr_ssim_registry()
         loader = _make_loader(3)
         # Force first slice to be empty (constant zero tensor)
         loader._tensor[0] = torch.zeros(1, 64, 64)
         # Verify our setup: the empty_slice_mask should flag slice 0
         assert loader.empty_slice_mask[0].item()
 
-        ev = IQAEvaluator(loader, None)
+        ev = IQAEvaluator(loader, None, reg)
         records = ev.run_evaluation()
         assert records[0].is_empty
         assert records[0].psnr is None
 
-    def test_custom_metric_stored_in_extra(self, isolated_registry, fake_metric, synthetic_png):
+    def test_custom_metric_stored_in_extra(self, fake_metric, synthetic_png):
         # Only NR custom metric so we don't need a target
-        for name in [s.name for s in isolated_registry.specs]:
-            isolated_registry._specs.pop(name, None)
-            isolated_registry._cache.pop(name, None)
-        register_metric("custom_eval", fake_metric,
-                        direction="higher_is_better", reference=False)
+        reg = MetricRegistry()
+        reg.register_metric("custom_eval", fake_metric,
+                            direction="higher_is_better", reference=False)
 
         loader = ImageLoader(synthetic_png)
-        ev = IQAEvaluator(loader, None)
+        ev = IQAEvaluator(loader, None, reg)
         records = ev.run_evaluation()
         active = [r for r in records if not r.is_empty]
         assert all("custom_eval" in r.extra for r in active)
 
-    def test_batching_covers_all_slices(self, isolated_registry, tmp_path):
+    def test_batching_covers_all_slices(self, tmp_path):
         """With n_slices > BATCH_SIZE every active slice should be evaluated."""
-        self._psnr_ssim_registry(isolated_registry)
+        reg = self._psnr_ssim_registry()
         n = BATCH_SIZE + 5
         # Create a multi-slice PNG by stacking frames into a NIfTI file
         import numpy as np, nibabel as nib
@@ -231,8 +233,32 @@ class TestRunEvaluation:
         loader._tensor = _load_nifti(p)
         assert loader._tensor.shape[0] == n
 
-        ev = IQAEvaluator(loader, loader)  # self-comparison
+        ev = IQAEvaluator(loader, loader, reg)  # self-comparison
         records = ev.run_evaluation()
         active = [r for r in records if not r.is_empty]
         # All active slices must have psnr filled
         assert all(r.psnr is not None for r in active)
+
+
+# ---------------------------------------------------------------------------
+# Per-run metric selection — the point of this refactor
+# ---------------------------------------------------------------------------
+
+class TestPerRunMetricSelection:
+    def test_two_evaluators_compute_different_metrics(self, fake_metric):
+        inp = _make_loader(2)
+
+        reg_a = MetricRegistry()
+        reg_a.register_metric("metric_a", fake_metric,
+                              direction="higher_is_better", reference=False)
+        reg_b = MetricRegistry()
+        reg_b.register_metric("metric_b", fake_metric,
+                              direction="higher_is_better", reference=False)
+
+        recs_a = IQAEvaluator(inp, None, reg_a).run_evaluation()
+        recs_b = IQAEvaluator(inp, None, reg_b).run_evaluation()
+
+        assert "metric_a" in recs_a[0].extra
+        assert "metric_b" not in recs_a[0].extra
+        assert "metric_b" in recs_b[0].extra
+        assert "metric_a" not in recs_b[0].extra

@@ -7,10 +7,14 @@ from metrics import (
     MetricRegistry,
     MetricSpec,
     PyIQAMetric,
-    register_metric,
-    registry,
     _pyiqa_factory,
+    BUILTIN_METRICS,
+    SEGMENTATION_METRICS,
+    PSNR,
+    SSIM,
 )
+
+from segmentation_metrics.monai_metrics import DICE as _DICE  # sanity: same objects re-exported
 
 
 # ---------------------------------------------------------------------------
@@ -87,21 +91,65 @@ class TestMetricRegistry:
             reg.get_metric("does_not_exist")
 
 
+class TestMetricRegistryInstances:
+    def test_constructor_accepts_specs(self):
+        reg = MetricRegistry(PSNR, SSIM)
+        assert {s.name for s in reg.specs} == {"psnr", "ssim"}
+
+    def test_constructor_empty_by_default(self):
+        reg = MetricRegistry()
+        assert reg.specs == []
+
+    def test_instances_are_independent(self):
+        reg_a = MetricRegistry(PSNR)
+        reg_b = MetricRegistry(SSIM)
+        assert {s.name for s in reg_a.specs} == {"psnr"}
+        assert {s.name for s in reg_b.specs} == {"ssim"}
+
+    def test_caches_are_independent(self, fake_metric):
+        reg_a = MetricRegistry()
+        reg_b = MetricRegistry()
+        reg_a.register_metric("shared_name", fake_metric,
+                              direction="higher_is_better", reference=False)
+        assert reg_a.get_metric("shared_name") is fake_metric
+        with pytest.raises(KeyError):
+            reg_b.get_metric("shared_name")
+
+    def test_register_metric_is_a_method(self, fake_metric):
+        reg = MetricRegistry()
+        reg.register_metric("custom", fake_metric,
+                            direction="lower_is_better", reference=True, channels="gray")
+        spec = next(s for s in reg.specs if s.name == "custom")
+        assert spec.builtin is False
+        assert spec.direction == "lower_is_better"
+        assert spec.reference is True
+        assert spec.channels == "gray"
+        assert reg.get_metric("custom") is fake_metric
+
+    def test_no_module_level_singleton(self):
+        import metrics
+        assert not hasattr(metrics, "registry"), "global registry singleton must be gone"
+        assert not callable(getattr(metrics, "register_metric", None)), \
+            "free register_metric function must be gone"
+
+
 # ---------------------------------------------------------------------------
 # register_metric (public API)
 # ---------------------------------------------------------------------------
 
 class TestRegisterMetric:
-    def test_custom_metric_accessible_via_registry(self, fake_metric, isolated_registry):
-        register_metric("custom_test", fake_metric, direction="higher_is_better", reference=False)
-        spec = next((s for s in isolated_registry.specs if s.name == "custom_test"), None)
+    def test_custom_metric_accessible_via_registry(self, fake_metric):
+        reg = MetricRegistry()
+        reg.register_metric("custom_test", fake_metric, direction="higher_is_better", reference=False)
+        spec = next((s for s in reg.specs if s.name == "custom_test"), None)
         assert spec is not None
         assert spec.builtin is False
         assert spec.direction == "higher_is_better"
 
-    def test_custom_metric_returns_scores(self, fake_metric, isolated_registry):
-        register_metric("custom_scores", fake_metric, direction="higher_is_better", reference=False)
-        m = isolated_registry.get_metric("custom_scores")
+    def test_custom_metric_returns_scores(self, fake_metric):
+        reg = MetricRegistry()
+        reg.register_metric("custom_scores", fake_metric, direction="higher_is_better", reference=False)
+        m = reg.get_metric("custom_scores")
         inp = torch.rand(3, 1, 32, 32)
         out = m(inp)
         assert len(out) == 3
@@ -192,10 +240,10 @@ class TestPyIQAMetricLPIPS:
 
 
 # ---------------------------------------------------------------------------
-# Built-in registry: all 10 expected metrics registered
+# Built-in metric specs: exposed as constants, not auto-registered
 # ---------------------------------------------------------------------------
 
-class TestBuiltinRegistry:
+class TestBuiltinMetrics:
     EXPECTED = {
         "psnr":               ("higher_is_better", True,  "gray"),
         "ssim":               ("higher_is_better", True,  "gray"),
@@ -209,16 +257,95 @@ class TestBuiltinRegistry:
         "niqe":               ("lower_is_better",  False, "rgb"),
     }
 
-    def test_all_names_registered(self):
-        names = {s.name for s in registry.specs}
+    def test_not_registered_by_default(self):
+        # A fresh registry starts empty — nothing self-registers at import time.
+        assert MetricRegistry().specs == []
+
+    def test_all_names_present_in_bundle(self):
+        names = {s.name for s in BUILTIN_METRICS}
         for name in self.EXPECTED:
-            assert name in names, f"'{name}' missing from registry"
+            assert name in names, f"'{name}' missing from BUILTIN_METRICS"
 
     @pytest.mark.parametrize("name,attrs", EXPECTED.items())
     def test_spec_attributes(self, name, attrs):
         direction, reference, channels = attrs
-        spec = next(s for s in registry.specs if s.name == name)
+        spec = next(s for s in BUILTIN_METRICS if s.name == name)
         assert spec.direction == direction,  f"{name}: direction mismatch"
         assert spec.reference == reference,  f"{name}: reference mismatch"
         assert spec.channels  == channels,   f"{name}: channels mismatch"
         assert spec.builtin   is True,       f"{name}: should be builtin"
+
+    def test_register_opts_in(self):
+        reg = MetricRegistry()
+        reg.register(*BUILTIN_METRICS)
+        names = {s.name for s in reg.specs}
+        for name in self.EXPECTED:
+            assert name in names, f"'{name}' missing after explicit registration"
+
+
+# ---------------------------------------------------------------------------
+# Segmentation metrics (MONAI-backed)
+# ---------------------------------------------------------------------------
+
+class TestSegmentationMetrics:
+    EXPECTED = {
+        "dice":              ("higher_is_better", True, "gray"),
+        "hausdorff95":       ("lower_is_better",  True, "gray"),
+        "nsd":               ("higher_is_better", True, "gray"),
+        "assd":              ("lower_is_better",  True, "gray"),
+        "panoptic_quality":  ("higher_is_better", True, "gray"),
+    }
+
+    def test_not_registered_by_default(self):
+        # A fresh registry starts empty — nothing self-registers at import time.
+        assert MetricRegistry().specs == []
+
+    def test_all_names_present_in_bundle(self):
+        names = {s.name for s in SEGMENTATION_METRICS}
+        for name in self.EXPECTED:
+            assert name in names, f"'{name}' missing from SEGMENTATION_METRICS"
+
+    def test_kept_out_of_builtin_metrics(self):
+        names = {s.name for s in BUILTIN_METRICS}
+        assert not (set(self.EXPECTED) & names)
+
+    @pytest.mark.parametrize("name,attrs", EXPECTED.items())
+    def test_spec_attributes(self, name, attrs):
+        direction, reference, channels = attrs
+        spec = next(s for s in SEGMENTATION_METRICS if s.name == name)
+        assert spec.direction == direction, f"{name}: direction mismatch"
+        assert spec.reference == reference, f"{name}: reference mismatch"
+        assert spec.channels  == channels,  f"{name}: channels mismatch"
+        assert spec.builtin   is False,     f"{name}: should not be builtin"
+        assert spec.domain    == "medical (MONAI)"
+        assert spec.description  # non-empty
+
+    def test_register_opts_in(self):
+        reg = MetricRegistry()
+        reg.register(*SEGMENTATION_METRICS)
+        names = {s.name for s in reg.specs}
+        for name in self.EXPECTED:
+            assert name in names, f"'{name}' missing after explicit registration"
+
+    def test_metrics_module_reexports_same_objects(self):
+        from metrics import DICE
+        assert DICE is _DICE
+
+
+# ---------------------------------------------------------------------------
+# MetricSpec description and domain fields
+# ---------------------------------------------------------------------------
+
+class TestMetricSpecDescriptionFields:
+    def test_defaults_are_empty_strings(self):
+        spec = MetricSpec("dummy", "higher_is_better", False, "gray", lambda: None)
+        assert spec.description == ""
+        assert spec.domain == ""
+
+    def test_accepts_explicit_values(self):
+        spec = MetricSpec(
+            "dummy", "higher_is_better", False, "gray", lambda: None,
+            description="measures X", domain="medical (MONAI)",
+        )
+        assert spec.description == "measures X"
+        assert spec.domain == "medical (MONAI)"

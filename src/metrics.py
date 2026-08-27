@@ -5,8 +5,16 @@ pyiqa exists. All pyiqa-specific code (imports, create_metric, tensor
 shape quirks) lives in `PyIQAMetric`. Swapping the IQA backend means
 writing a new adapter class; IQAEvaluator is untouched.
 
+Metrics are held by `MetricRegistry` instances — build one per evaluation
+run and pass it to IQAEvaluator/evaluate(). There is no global registry, so
+an IQA run and a segmentation run never interfere.
+
 To add a custom metric without touching main.py or pyiqa, call
-`register_metric()` with an object implementing `Metric`.
+`MetricRegistry.register_metric()` with an object implementing `Metric`.
+
+Built-in metrics (below) are exposed as `MetricSpec` constants (`PSNR`,
+`SSIM`, ...) — nothing is registered until the caller opts in by passing
+them to a registry, e.g. `MetricRegistry(PSNR, SSIM)`.
 """
 
 from dataclasses import dataclass, field
@@ -49,13 +57,19 @@ class MetricSpec:
         factory:   builds the Metric instance (lazily, cached by MetricRegistry).
         builtin:   True for framework-shipped metrics (dedicated record field);
                    False for user-registered metrics (stored in record.extra).
+        description: human-readable explanation of what the metric measures,
+                     shown to users choosing a metric.
+        domain:      the domain the metric's defaults are calibrated for,
+                     e.g. "medical (MONAI)". Empty string means domain-agnostic.
     """
     name:      str
     direction: MetricDirection
     reference: bool
     channels:  MetricChannels
     factory:   Callable[[], Metric]
-    builtin:   bool = True
+    builtin:      bool = True
+    description:  str  = ""
+    domain:       str  = ""
 
 
 class PyIQAMetric:
@@ -75,15 +89,44 @@ class PyIQAMetric:
 
 
 class MetricRegistry:
-    """Holds registered MetricSpecs and lazily-instantiated Metric objects."""
+    """Holds registered MetricSpecs and lazily-instantiated Metric objects.
 
-    def __init__(self):
+    Build one instance per evaluation run and pass it explicitly — there is
+    no global registry. Two instances never share specs or cached metric
+    objects, so an IQA run and a segmentation run can proceed side by side:
+
+        iqa = MetricRegistry(*BUILTIN_METRICS)
+        seg = MetricRegistry(*SEGMENTATION_METRICS)
+    """
+
+    def __init__(self, *specs: MetricSpec):
         self._specs: dict[str, MetricSpec] = {}
         self._cache: dict[str, Metric] = {}
+        self.register(*specs)
 
-    def register(self, spec: MetricSpec) -> None:
-        self._specs[spec.name] = spec
-        self._cache.pop(spec.name, None)
+    def register(self, *specs: MetricSpec) -> None:
+        for spec in specs:
+            self._specs[spec.name] = spec
+            self._cache.pop(spec.name, None)
+
+    def register_metric(
+        self,
+        name: str,
+        metric: Metric,
+        *,
+        direction: MetricDirection,
+        reference: bool,
+        channels: MetricChannels = "rgb",
+    ) -> None:
+        """Hook a custom metric into this registry.
+
+        No pyiqa import and no edit to main.py or ImageEvaluatorRecord
+        required. `metric` just needs to implement the Metric protocol. Its
+        scores show up as a column named `name` in the report (via
+        ImageEvaluatorRecord.extra).
+        """
+        self.register(MetricSpec(name, direction, reference, channels,
+                                 factory=lambda: metric, builtin=False))
 
     def get_metric(self, name: str) -> Metric:
         if name not in self._cache:
@@ -99,26 +142,6 @@ class MetricRegistry:
         return {spec.name: spec.direction for spec in self._specs.values()}
 
 
-registry = MetricRegistry()
-
-
-def register_metric(
-    name: str,
-    metric: Metric,
-    *,
-    direction: MetricDirection,
-    reference: bool,
-    channels: MetricChannels = "rgb",
-) -> None:
-    """Hook a custom metric into the evaluation pipeline.
-
-    No pyiqa import, no editing main.py or ImageEvaluatorRecord required.
-    `metric` just needs to implement the Metric protocol. Its scores show
-    up as a column named `name` in the report (via ImageEvaluatorRecord.extra).
-    """
-    registry.register(MetricSpec(name, direction, reference, channels, factory=lambda: metric, builtin=False))
-
-
 # ---------------------------------------------------------------------------
 # Built-in metrics (pyiqa-backed)
 # ---------------------------------------------------------------------------
@@ -127,20 +150,36 @@ def _pyiqa_factory(name: str, **kwargs) -> Callable[[], Metric]:
     return lambda: PyIQAMetric(name, **kwargs)
 
 
-_BUILTIN_SPECS: list[MetricSpec] = [
-    # Full-reference metrics
-    MetricSpec("psnr",              "higher_is_better", True,  "gray", _pyiqa_factory("psnr")),
-    MetricSpec("ssim",              "higher_is_better", True,  "gray", _pyiqa_factory("ssim")),
-    MetricSpec("lpips",             "lower_is_better",  True,  "rgb",  _pyiqa_factory("lpips")),
-    MetricSpec("dists",             "lower_is_better",  True,  "rgb",  _pyiqa_factory("dists")),
-    MetricSpec("radimagenet_lpips", "lower_is_better",  True,  "rgb",  _pyiqa_factory("radimagenet_lpips", backbone_path=str(RESNET50))),
-    # No-reference metrics
-    MetricSpec("clipiqa",           "higher_is_better", False, "rgb",  _pyiqa_factory("clipiqa")),
-    MetricSpec("clip_iqa_lung",     "higher_is_better", False, "rgb",  _pyiqa_factory("clip_iqa_lung")),
-    MetricSpec("clip_iqa_brain",    "higher_is_better", False, "rgb",  _pyiqa_factory("clip_iqa_brain")),
-    MetricSpec("brisque",           "lower_is_better",  False, "rgb",  _pyiqa_factory("brisque")),
-    MetricSpec("niqe",              "lower_is_better",  False, "rgb",  _pyiqa_factory("niqe")),
-]
+# Imported here (rather than alongside the other module-level imports above)
+# to avoid a circular import: monai_metrics.py does `from metrics import
+# MetricSpec`, which requires MetricSpec to already be defined in this module.
+from segmentation_metrics.monai_metrics import (
+    DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY,
+)
 
-for _spec in _BUILTIN_SPECS:
-    registry.register(_spec)
+
+# Full-reference metrics (need a target image)
+PSNR              = MetricSpec("psnr",              "higher_is_better", True,  "gray", _pyiqa_factory("psnr"))
+SSIM              = MetricSpec("ssim",              "higher_is_better", True,  "gray", _pyiqa_factory("ssim"))
+LPIPS             = MetricSpec("lpips",             "lower_is_better",  True,  "rgb",  _pyiqa_factory("lpips"))
+DISTS             = MetricSpec("dists",             "lower_is_better",  True,  "rgb",  _pyiqa_factory("dists"))
+RADIMAGENET_LPIPS = MetricSpec("radimagenet_lpips", "lower_is_better",  True,  "rgb",  _pyiqa_factory("radimagenet_lpips", backbone_path=str(RESNET50)))
+# No-reference metrics
+CLIPIQA           = MetricSpec("clipiqa",           "higher_is_better", False, "rgb",  _pyiqa_factory("clipiqa"))
+CLIP_IQA_LUNG     = MetricSpec("clip_iqa_lung",     "higher_is_better", False, "rgb",  _pyiqa_factory("clip_iqa_lung"))
+CLIP_IQA_BRAIN    = MetricSpec("clip_iqa_brain",    "higher_is_better", False, "rgb",  _pyiqa_factory("clip_iqa_brain"))
+BRISQUE           = MetricSpec("brisque",           "lower_is_better",  False, "rgb",  _pyiqa_factory("brisque"))
+NIQE              = MetricSpec("niqe",              "lower_is_better",  False, "rgb",  _pyiqa_factory("niqe"))
+
+# Convenience bundle for "just register everything" — not registered by default.
+BUILTIN_METRICS = (
+    PSNR, SSIM, LPIPS, DISTS, RADIMAGENET_LPIPS,
+    CLIPIQA, CLIP_IQA_LUNG, CLIP_IQA_BRAIN, BRISQUE, NIQE,
+)
+
+# MONAI-backed segmentation-quality metrics (evaluate masks, not images) —
+# kept separate from BUILTIN_METRICS so main.py's raw-image CLI is unaffected.
+SEGMENTATION_METRICS = (
+    DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY,
+)
+
