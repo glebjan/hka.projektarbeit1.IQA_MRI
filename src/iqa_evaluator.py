@@ -5,28 +5,33 @@ from typing import Optional
 import torch
 
 from image_loader import ImageLoader, strip_all_extensions
-from metrics import DEVICE, MetricChannels, MetricSpec, registry
+from metrics import DEVICE, MetricChannels, MetricRegistry, MetricSpec
 from records import ImageEvaluatorRecord
 
 BATCH_SIZE = 32  # Slices pro Batch-Call. Bei OOM reduzieren.
 
 
 class IQAEvaluator:
-    """Computes all registered IQA metrics for one input/target image pair.
+    """Computes one registry's metrics for one input/target image pair.
+
+    The metric set comes from the `registry` passed in, so different
+    evaluators in the same process can compute different metrics.
 
     The evaluator is intentionally free of file I/O: it only returns
     ImageEvaluatorRecord objects.  Writing results to disk is handled by
-    MaskWriter (segmentation images) and EvaluationResult (CSV).
+    EvaluationResult (CSV).
     """
 
     def __init__(
         self,
         input_image:  ImageLoader,
         target_image: Optional[ImageLoader],
+        registry:     MetricRegistry,
         source_model: Optional[str] = None,
     ):
         self.input        = input_image
         self.target       = target_image
+        self.registry     = registry
         self.source_model = source_model
 
         if self.target is not None and self.input.tensor.shape != self.target.tensor.shape:
@@ -44,7 +49,7 @@ class IQAEvaluator:
         return base[indices]  # (len(indices), C, H, W)
 
     def _compute_batch(self, spec: MetricSpec, indices: list[int]) -> list[Optional[float]]:
-        metric = registry.get_metric(spec.name)
+        metric = self.registry.get_metric(spec.name)
         inp = self._pick_tensor_batch(self.input, spec.channels, indices).to(DEVICE)
         try:
             if spec.reference:
@@ -83,7 +88,7 @@ class IQAEvaluator:
 
         active = [i for i in range(D) if not records[i].is_empty]
 
-        for spec in registry.specs:
+        for spec in self.registry.specs:
             if spec.reference and not has_target:
                 continue
             for chunk_start in range(0, len(active), BATCH_SIZE):
