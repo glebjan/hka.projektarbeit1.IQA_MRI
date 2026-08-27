@@ -23,7 +23,7 @@ class ImageEvaluatorRecord:
     clip_iqa_brain:      Optional[float] = None
     brisque:             Optional[float] = None
     niqe:                Optional[float] = None
-    # User-registered metrics (see metrics.register_metric) — flattened into to_dict()
+    # User-registered metrics (see MetricRegistry.register_metric) — flattened into to_dict()
     extra:               dict[str, Optional[float]] = field(default_factory=dict)
 
     def to_dict(self) -> dict:

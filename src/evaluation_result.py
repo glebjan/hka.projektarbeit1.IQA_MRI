@@ -20,7 +20,7 @@ class EvaluationResult:
     """Container for the results of one evaluation run.
 
     Normal use (notebook, no file I/O):
-        result = evaluate()
+        result = evaluate(INPUT, TARGET, registry=registry)
         df     = result.to_frame()
 
     Optional report output:

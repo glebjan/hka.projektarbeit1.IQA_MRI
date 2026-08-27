@@ -95,7 +95,6 @@ regex==2026.1.15
 requests==2.32.5
 ruff==0.15.14
 safetensors==0.7.0
-scikit-image==0.24.0
 scipy==1.13.1
 sentencepiece==0.2.1
 SimpleITK
