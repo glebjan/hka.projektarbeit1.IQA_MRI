@@ -74,12 +74,41 @@ Verification performed while writing this design:
 ## Non-goals
 
 - No OpenCV dependency.
-- No 3D/volumetric boundary band. Framework tensors are `(D, 1, H, W)` and every
-  existing metric scores per 2D slice; Boundary IoU does the same.
+- No 3D/volumetric boundary band. Framework tensors are `(D, 1, H, W)`;
+  `IQAEvaluator.run_evaluation` treats `D` as a batch and emits one record per
+  slice, so every existing metric — Dice, HD95, NSD, ASSD included — already
+  scores per 2D slice. Boundary IoU does the same, which keeps a report's
+  columns comparable with each other. See *Known limitation* below.
 - No multi-class one-hot averaging. The metric scores channel 0 of each sample,
   matching `MonaiPanopticQualityMetric`'s per-sample loop.
 - Not added to `BUILTIN_METRICS` — it joins `SEGMENTATION_METRICS`, so
   `main.py`'s raw-image CLI is unaffected.
+
+## Known limitation: through-plane error
+
+Because the band is computed in-plane, a voxel that is interior in `(H, W)` but
+sits on the volume's top or bottom cap is never counted as boundary. Per-slice
+Boundary IoU therefore under-penalises error along the slice axis.
+
+Measured on an isotropic 128³ ball with band width `d = 3`:
+
+| | |
+|---|---|
+| 3D surface voxels the per-slice band never covers | 7,766 (~9% of the true 3D band), on 46 of 128 slices — all polar caps |
+| Pure 3-voxel through-plane shift, true 3D score | 0.3174 |
+| …same error, per-slice bands summed then divided | 0.4127 (30% optimistic) |
+| …same error, mean of per-slice scores | 0.3894 (23% optimistic) |
+
+Severity depends on voxel spacing. Repeating the test on anisotropic MRI-like
+data (1×1×5 mm, 3 mm tolerance) the per-slice band missed **zero** voxels — the
+adjacent slice lies farther away than the tolerance, so in-plane *is* the whole
+neighbourhood. The limitation bites on near-isotropic volumes, not on typical
+thick-slice acquisitions.
+
+Accepted deliberately: making Boundary IoU alone volumetric would put a
+one-score-per-volume column next to per-slice Dice and HD95 in the same CSV,
+which is not a like-for-like comparison. Moving the whole segmentation suite to
+volume-level scoring is a separate, framework-wide change.
 
 ## Module layout
 
