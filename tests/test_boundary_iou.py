@@ -47,6 +47,12 @@ class TestDilationPixels:
     def test_explicit_ratio_overrides_default(self):
         assert dilation_pixels((400, 400), 0.1) == 57  # 565.69 * 0.1 = 56.57
 
+    def test_exact_half_rounds_to_even(self):
+        # 3-4-5 triangle: diag = 5.0 exactly, * 0.5 = 2.5 exactly representable.
+        # Python's round()/int(round()) is round-half-to-even (banker's
+        # rounding), so 2.5 -> 2 (nearest even), not 3.
+        assert dilation_pixels((3, 4), 0.5) == 2
+
 
 class TestBoundaryRegion:
     def test_band_of_a_square_is_the_shell(self):
@@ -89,9 +95,11 @@ class TestBoundaryRegion:
 
     @pytest.mark.parametrize("dilation", [1, 2, 3, 5, 9])
     def test_matches_iterated_erosion_reference(self, dilation):
-        """Bit-exact agreement with the published cv2-based recipe, including
-        masks that touch the image border."""
-        rng = np.random.default_rng(0)
+        """Bit-exact agreement with the published iterated-erosion recipe
+        (`cv2.erode` in the reference release, `scipy.ndimage.binary_erosion`
+        here — equivalent because the zero pad makes the two border
+        conventions agree), including masks that touch the image border."""
+        rng = np.random.default_rng(dilation)
         for _ in range(20):
             h, w = rng.integers(6, 40, 2)
             mask = rng.random((h, w)) > rng.uniform(0.2, 0.8)

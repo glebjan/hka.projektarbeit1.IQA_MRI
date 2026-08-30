@@ -21,6 +21,13 @@ the image border count that clipped edge as boundary, matching the reference.
 Reference: Bowen Cheng, Ross Girshick, Piotr Dollar, Alexander C. Berg,
 Alexander Kirillov. "Boundary IoU: Improving Object-Centric Image Segmentation
 Evaluation." CVPR 2021.
+
+Usage: import `metrics` before this module — `metrics` late-imports
+`segmentation_metrics.*`, which import `MetricSpec` back from `metrics`, so
+importing this module first raises a partially-initialized-module error.
+
+    import metrics
+    from segmentation_metrics.boundary_iou import BOUNDARY_IOU
 """
 from __future__ import annotations
 
@@ -135,6 +142,11 @@ class BoundaryIoUMetric:
     batch the way `MonaiPanopticQualityMetric` does, and returns one score per
     sample. Undefined scores (both masks empty) come back as `None`.
 
+    Integer label maps (multi-class one-vs-rest scoring) are not supported
+    here — call the numpy `boundary_iou` function directly with `label=...`
+    for that; `ImageLoader` tensors are always float32 in [0, 1], so this
+    adapter always binarizes via `threshold`.
+
     Args:
         dilation_ratio: boundary band width as a fraction of the image diagonal.
         threshold: binarization cutoff for float masks (`value >= threshold`).
@@ -142,7 +154,6 @@ class BoundaryIoUMetric:
             the band computation needs a boolean array, so a cutoff always
             applies. Masks loaded via `ImageLoader` arrive as exact 0.0/1.0
             floats, for which any cutoff in (0, 1) is equivalent.
-        label: for integer label maps, which class to score one-vs-rest.
     """
 
     def __init__(
@@ -150,11 +161,9 @@ class BoundaryIoUMetric:
         *,
         dilation_ratio: float = DEFAULT_DILATION_RATIO,
         threshold: float = 0.5,
-        label: int = 1,
     ):
         self._dilation_ratio = dilation_ratio
         self._threshold      = threshold
-        self._label          = label
 
     def __call__(
         self, input: torch.Tensor, target: Optional[torch.Tensor] = None
@@ -171,7 +180,6 @@ class BoundaryIoUMetric:
                 pred[i, 0],
                 gt[i, 0],
                 dilation_ratio=self._dilation_ratio,
-                label=self._label,
                 threshold=self._threshold,
             )
             scores.append(None if np.isnan(score) else float(score))
@@ -182,7 +190,6 @@ def boundary_iou_metric(
     *,
     dilation_ratio: float = DEFAULT_DILATION_RATIO,
     threshold: float = 0.5,
-    label: int = 1,
 ) -> MetricSpec:
     """Boundary IoU: IoU of the contour bands rather than the whole mask.
 
@@ -196,11 +203,8 @@ def boundary_iou_metric(
             degenerates to plain mask IoU.
         threshold: binarization cutoff for float/probability masks
             (`value >= threshold` -> True).
-        label: for integer label maps, which class to score one-vs-rest.
     """
-    metric = BoundaryIoUMetric(
-        dilation_ratio=dilation_ratio, threshold=threshold, label=label
-    )
+    metric = BoundaryIoUMetric(dilation_ratio=dilation_ratio, threshold=threshold)
     return MetricSpec(
         name="boundary_iou",
         direction="higher_is_better",
