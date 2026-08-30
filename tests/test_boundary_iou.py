@@ -1,13 +1,18 @@
 """Tests for src/segmentation_metrics/boundary_iou.py — Boundary IoU (Cheng et al., CVPR 2021)."""
 import numpy as np
 import pytest
+import torch
 from scipy.ndimage import binary_erosion
 
+from metrics import MetricSpec
 from segmentation_metrics.boundary_iou import (
     DEFAULT_DILATION_RATIO,
     boundary_iou,
     boundary_region,
     dilation_pixels,
+    BoundaryIoUMetric,
+    boundary_iou_metric,
+    BOUNDARY_IOU,
 )
 
 
@@ -175,3 +180,73 @@ class TestBoundaryIoU:
         labels[40:60, 40:60] = 2
         assert boundary_iou(labels, labels, label=2) == pytest.approx(1.0)
         assert boundary_iou(labels, np.zeros_like(labels), label=2) == 0.0
+
+
+def _batch(masks: list[np.ndarray]) -> torch.Tensor:
+    """Stack 2D masks into the framework's (N, 1, H, W) float32 tensor."""
+    return torch.from_numpy(np.stack(masks)[:, None].astype(np.float32))
+
+
+class TestBoundaryIoUMetricAdapter:
+    def test_scores_each_sample_independently(self):
+        """Three samples with three distinct expected scores — a per-sample bug
+        (e.g. scoring the whole batch at once) cannot pass this."""
+        metric = BoundaryIoUMetric()
+        a, b = _square(160, 20), _square(160, 25)
+        empty = np.zeros((400, 400), bool)
+        scores = metric(_batch([a, a, a]), _batch([a, b, empty]))
+        assert len(scores) == 3
+        assert scores[0] == pytest.approx(1.0)
+        assert scores[1] == pytest.approx(0.3822, abs=1e-4)
+        assert scores[2] == 0.0
+
+    def test_reports_none_for_undefined_scores(self):
+        metric = BoundaryIoUMetric()
+        empty = np.zeros((400, 400), bool)
+        solid = _square(160, 120)
+        scores = metric(_batch([empty, solid]), _batch([empty, solid]))
+        assert scores[0] is None
+        assert scores[1] == pytest.approx(1.0)
+
+    def test_missing_target_raises(self):
+        metric = BoundaryIoUMetric()
+        with pytest.raises(ValueError):
+            metric(_batch([_square(160, 120)]))
+
+    def test_dilation_ratio_is_forwarded(self):
+        a, b = _square(160, 20), _square(160, 25)
+        wide = BoundaryIoUMetric(dilation_ratio=1.0)(_batch([a]), _batch([b]))
+        assert wide[0] == pytest.approx(_mask_iou(a, b))
+
+    def test_threshold_binarizes_soft_masks(self):
+        soft_pred = np.where(_square(160, 120), 0.9, 0.1)
+        soft_gt = np.where(_square(160, 120), 0.7, 0.2)
+        scores = BoundaryIoUMetric(threshold=0.5)(_batch([soft_pred]), _batch([soft_gt]))
+        assert scores[0] == pytest.approx(1.0)
+
+
+class TestBoundaryIoUMetricBuilder:
+    def test_returns_metric_spec(self):
+        spec = boundary_iou_metric()
+        assert isinstance(spec, MetricSpec)
+        assert spec.name == "boundary_iou"
+        assert spec.direction == "higher_is_better"
+        assert spec.reference is True
+        assert spec.channels == "gray"
+        assert spec.builtin is False
+        assert spec.domain == ""
+        assert "Boundary IoU" in spec.description
+
+    def test_default_constant_matches_builder_defaults(self):
+        assert BOUNDARY_IOU.name == "boundary_iou"
+        assert BOUNDARY_IOU.builtin is False
+
+    def test_factory_produces_a_working_metric(self):
+        metric = BOUNDARY_IOU.factory()
+        mask = _square(160, 120)
+        assert metric(_batch([mask]), _batch([mask]))[0] == pytest.approx(1.0)
+
+    def test_builder_overrides_reach_the_metric(self):
+        a, b = _square(160, 20), _square(160, 25)
+        metric = boundary_iou_metric(dilation_ratio=1.0).factory()
+        assert metric(_batch([a]), _batch([b]))[0] == pytest.approx(_mask_iou(a, b))

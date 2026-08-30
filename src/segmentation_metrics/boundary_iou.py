@@ -24,9 +24,13 @@ Evaluation." CVPR 2021.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
+import torch
 from scipy.ndimage import distance_transform_cdt
 
+from metrics import MetricSpec
 from segmentation_metrics.volume import as_mask
 
 DEFAULT_DILATION_RATIO = 0.02
@@ -122,3 +126,100 @@ def boundary_iou(
     if union == 0:
         return float("nan")
     return float(np.count_nonzero(pred_band & gt_band)) / union
+
+
+class BoundaryIoUMetric:
+    """Adapter making `boundary_iou` satisfy the framework's Metric protocol.
+
+    Scores channel 0 of each sample in an `(N, C, H, W)` batch, looping over the
+    batch the way `MonaiPanopticQualityMetric` does, and returns one score per
+    sample. Undefined scores (both masks empty) come back as `None`.
+
+    Args:
+        dilation_ratio: boundary band width as a fraction of the image diagonal.
+        threshold: binarization cutoff for float masks (`value >= threshold`).
+            Unlike the MONAI adapters there is no "skip binarization" option —
+            the band computation needs a boolean array, so a cutoff always
+            applies. Masks loaded via `ImageLoader` arrive as exact 0.0/1.0
+            floats, for which any cutoff in (0, 1) is equivalent.
+        label: for integer label maps, which class to score one-vs-rest.
+    """
+
+    def __init__(
+        self,
+        *,
+        dilation_ratio: float = DEFAULT_DILATION_RATIO,
+        threshold: float = 0.5,
+        label: int = 1,
+    ):
+        self._dilation_ratio = dilation_ratio
+        self._threshold      = threshold
+        self._label          = label
+
+    def __call__(
+        self, input: torch.Tensor, target: Optional[torch.Tensor] = None
+    ) -> list[Optional[float]]:
+        if target is None:
+            raise ValueError(
+                "boundary_iou is a full-reference metric and requires a target mask"
+            )
+        pred = input.detach().cpu().numpy()
+        gt   = target.detach().cpu().numpy()
+        scores: list[Optional[float]] = []
+        for i in range(pred.shape[0]):
+            score = boundary_iou(
+                pred[i, 0],
+                gt[i, 0],
+                dilation_ratio=self._dilation_ratio,
+                label=self._label,
+                threshold=self._threshold,
+            )
+            scores.append(None if np.isnan(score) else float(score))
+        return scores
+
+
+def boundary_iou_metric(
+    *,
+    dilation_ratio: float = DEFAULT_DILATION_RATIO,
+    threshold: float = 0.5,
+    label: int = 1,
+) -> MetricSpec:
+    """Boundary IoU: IoU of the contour bands rather than the whole mask.
+
+    Domain-agnostic: the band width is a fraction of the image diagonal, so
+    there is no physical spacing or class count to retune between domains —
+    `dilation_ratio` is the single tunable and means the same thing everywhere.
+
+    Args:
+        dilation_ratio: boundary band width as a fraction of sqrt(H^2 + W^2)
+            (default 0.02, the paper's value). Larger is more forgiving; 1.0
+            degenerates to plain mask IoU.
+        threshold: binarization cutoff for float/probability masks
+            (`value >= threshold` -> True).
+        label: for integer label maps, which class to score one-vs-rest.
+    """
+    metric = BoundaryIoUMetric(
+        dilation_ratio=dilation_ratio, threshold=threshold, label=label
+    )
+    return MetricSpec(
+        name="boundary_iou",
+        direction="higher_is_better",
+        reference=True,
+        channels="gray",
+        factory=lambda: metric,
+        builtin=False,
+        description=(
+            "Boundary IoU: intersection-over-union computed on a thin band "
+            "along each mask's contour rather than over the whole mask region "
+            "(1.0 = contours coincide). Unlike mask IoU or Dice, the score is "
+            "not inflated by object size, so a fixed boundary error costs the "
+            "same on a large object as on a small one. Domain-agnostic: the "
+            "band width is `dilation_ratio` (default 0.02) of the image "
+            "diagonal, so it needs no physical voxel spacing; raise it to "
+            "tolerate coarser boundaries. Cheng et al., CVPR 2021."
+        ),
+        domain="",
+    )
+
+
+BOUNDARY_IOU = boundary_iou_metric()
