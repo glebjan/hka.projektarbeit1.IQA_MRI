@@ -250,3 +250,31 @@ class TestBoundaryIoUMetricBuilder:
         a, b = _square(160, 20), _square(160, 25)
         metric = boundary_iou_metric(dilation_ratio=1.0).factory()
         assert metric(_batch([a]), _batch([b]))[0] == pytest.approx(_mask_iou(a, b))
+
+
+class TestFrameworkRegistration:
+    def test_exported_from_metrics(self):
+        import metrics
+        assert metrics.BOUNDARY_IOU is BOUNDARY_IOU
+
+    def test_included_in_segmentation_bundle(self):
+        from metrics import SEGMENTATION_METRICS
+        assert BOUNDARY_IOU in SEGMENTATION_METRICS
+
+    def test_not_in_builtin_bundle(self):
+        """main.py's raw-image CLI must stay unaffected by segmentation metrics."""
+        from metrics import BUILTIN_METRICS
+        assert BOUNDARY_IOU not in BUILTIN_METRICS
+
+    def test_reexported_from_main(self):
+        import main
+        assert main.BOUNDARY_IOU is BOUNDARY_IOU
+
+    def test_registry_round_trip(self):
+        from metrics import MetricRegistry
+        registry = MetricRegistry(BOUNDARY_IOU)
+        assert "boundary_iou" in registry.direction
+        assert registry.direction["boundary_iou"] == "higher_is_better"
+        metric = registry.get_metric("boundary_iou")
+        mask = _square(160, 120)
+        assert metric(_batch([mask]), _batch([mask]))[0] == pytest.approx(1.0)
