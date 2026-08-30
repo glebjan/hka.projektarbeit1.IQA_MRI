@@ -13,6 +13,23 @@ function's MetricSpec.description below states which parameters must be
 adjusted to apply the metric in another domain (e.g. materials science:
 different physical units via `spacing`, different class counts via
 `class_thresholds`/kwargs).
+
+Usage: each builder (`dice_metric()`, `hausdorff95_metric()`, etc.) returns a
+`MetricSpec` — pass one or more of these into `MetricRegistry(*specs)` (or
+`registry.register(*specs)`) to build a per-run registry, then hand that
+registry to `IQAEvaluator(registry=registry, ...)`. The evaluator looks up
+and lazily instantiates each spec's metric from the registry when it runs.
+
+    from metrics import MetricRegistry
+    from segmentation_metrics.monai_metrics import DICE, HAUSDORFF95
+    from iqa_evaluator import IQAEvaluator
+
+    registry = MetricRegistry(DICE, HAUSDORFF95)
+    evaluator = IQAEvaluator(registry=registry, ...)
+
+Use the pre-built constants (`DICE`, `HAUSDORFF95`, `NSD`, `ASSD`,
+`PANOPTIC_QUALITY`) for defaults, or call a builder directly (e.g.
+`dice_metric(threshold=0.5)`) to override params before registering.
 """
 
 from typing import Callable, Optional
@@ -37,6 +54,14 @@ class MonaiSegmentationMetric:
     All four share the call signature `compute_fn(y_pred, y, **kwargs) -> (N, C)`
     tensor (batch x class channels); this adapter averages across the class
     dimension to produce one score per sample, matching the Metric protocol.
+
+    `threshold`: MONAI's metrics expect hard binary masks (0/1), but pred/gt
+    tensors loaded from disk (e.g. via `ImageLoader`) may be soft/probability
+    values in [0, 1] instead of clean binary masks. If set, both pred and gt
+    are binarized as `value > threshold` before scoring — anything above the
+    cutoff becomes 1.0, everything else 0.0. Leave `None` (default) if your
+    masks are already strictly binary; setting a threshold on data that isn't
+    a probability map will silently corrupt scores.
     """
 
     def __init__(self, compute_fn: Callable[..., torch.Tensor], *, threshold: Optional[float] = None, **monai_kwargs):
@@ -62,6 +87,15 @@ def dice_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricS
     (include_background=True, since there is nothing else to include). For
     multi-class segmentation, pass a multi-channel one-hot input and set
     include_background=False to exclude a true background channel.
+
+    Args:
+        threshold: binarize cutoff for soft/probability pred+gt inputs
+            (`value > threshold` -> 0/1). None (default) = inputs already
+            binary, skip binarization.
+        include_background (kwarg, default True): if False, drops channel 0
+            (assumed background class) before scoring — only meaningful for
+            multi-channel one-hot input.
+        **monai_kwargs: forwarded verbatim to `monai.metrics.compute_dice`.
     """
     monai_kwargs.setdefault("include_background", True)
     metric = MonaiSegmentationMetric(compute_dice, threshold=threshold, **monai_kwargs)
@@ -94,6 +128,21 @@ def hausdorff95_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> 
     `spacing` is supplied (physical units per voxel, e.g. mm for medical scans
     or µm for materials micrographs). Pass `spacing=<value or per-axis list>`
     to get physically meaningful distances in another domain.
+
+    Args:
+        threshold: binarize cutoff for soft/probability pred+gt inputs
+            (`value > threshold` -> 0/1). None (default) = inputs already
+            binary, skip binarization.
+        include_background (kwarg, default True): if False, drops channel 0
+            (assumed background class) before scoring.
+        percentile (kwarg, default 95): which percentile of boundary-point
+            distances to report; 95 makes the metric robust to a few outlier
+            voxels (100 would be the plain max Hausdorff distance).
+        spacing (kwarg, default None): physical size of one voxel (scalar or
+            per-axis list); converts the voxel-unit distance to real units
+            (mm for medical, µm for materials, etc). Omit to get raw voxel
+            counts.
+        **monai_kwargs: forwarded verbatim to `monai.metrics.compute_hausdorff_distance`.
     """
     monai_kwargs.setdefault("include_background", True)
     monai_kwargs.setdefault("percentile", 95)
@@ -130,6 +179,21 @@ def normalized_surface_dice_metric(*, threshold: Optional[float] = None, **monai
     `class_thresholds` (acceptable boundary error) and `spacing` (physical
     voxel size) to that domain's units and tolerance, and extend
     `class_thresholds` to one entry per class if using multi-class masks.
+
+    Args:
+        threshold: binarize cutoff for soft/probability pred+gt inputs
+            (`value > threshold` -> 0/1). None (default) = inputs already
+            binary, skip binarization.
+        include_background (kwarg, default True): if False, drops channel 0
+            (assumed background class) before scoring.
+        class_thresholds (kwarg, default [1.0]): per-class tolerance distance
+            — boundary points within this distance of each other count as
+            matching. One entry per class channel; interpreted in the same
+            units as `spacing`.
+        spacing (kwarg, default None): physical size of one voxel (scalar or
+            per-axis list); sets the unit that `class_thresholds` is measured
+            in. Omit to work in raw voxel counts.
+        **monai_kwargs: forwarded verbatim to `monai.metrics.compute_surface_dice`.
     """
     monai_kwargs.setdefault("include_background", True)
     monai_kwargs.setdefault("class_thresholds", [1.0])
@@ -165,6 +229,19 @@ def average_surface_distance_metric(*, threshold: Optional[float] = None, **mona
     Domain: medical (MONAI). Like HD95, the result is in voxel units unless
     `spacing` is supplied. For another domain, set `spacing` to that domain's
     physical voxel size to get a physically meaningful distance.
+
+    Args:
+        threshold: binarize cutoff for soft/probability pred+gt inputs
+            (`value > threshold` -> 0/1). None (default) = inputs already
+            binary, skip binarization.
+        include_background (kwarg, default True): if False, drops channel 0
+            (assumed background class) before scoring.
+        symmetric (kwarg, default True): average pred→gt and gt→pred boundary
+            distances (True) vs. one direction only (False).
+        spacing (kwarg, default None): physical size of one voxel (scalar or
+            per-axis list); converts the voxel-unit distance to real units.
+            Omit to get raw voxel counts.
+        **monai_kwargs: forwarded verbatim to `monai.metrics.compute_average_surface_distance`.
     """
     monai_kwargs.setdefault("include_background", True)
     monai_kwargs.setdefault("symmetric", True)
@@ -200,6 +277,10 @@ class MonaiPanopticQualityMetric:
     Binary 0/1 masks are treated as a single-instance PQ (foreground = one
     instance). For true multi-instance panoptic quality, supply pred/gt with
     distinct integer instance IDs per object instead of a plain 0/1 mask.
+
+    `threshold`: see `MonaiSegmentationMetric` above — same binarize-before-
+    scoring behavior (`value > threshold` on both pred and gt), same caveat
+    about only using it on genuinely soft/probability inputs.
     """
 
     def __init__(self, *, threshold: Optional[float] = None, **monai_kwargs):
@@ -232,6 +313,15 @@ def panoptic_quality_metric(*, threshold: Optional[float] = None, **monai_kwargs
     supply pred/gt with a unique integer label per instance instead of a
     binary mask, and tune `match_iou_threshold` (default 0.5) for that
     domain's acceptable localization tolerance.
+
+    Args:
+        threshold: binarize cutoff for soft/probability pred+gt inputs
+            (`value > threshold` -> 0/1). None (default) = inputs already
+            binary/label, skip binarization.
+        match_iou_threshold (kwarg, default 0.5): minimum IoU for a
+            predicted instance to count as matched to a ground-truth
+            instance; unmatched instances count against the score.
+        **monai_kwargs: forwarded verbatim to `monai.metrics.compute_panoptic_quality`.
     """
     monai_kwargs.setdefault("match_iou_threshold", 0.5)
     metric = MonaiPanopticQualityMetric(threshold=threshold, **monai_kwargs)
