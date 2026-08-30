@@ -5,6 +5,7 @@ from scipy.ndimage import binary_erosion
 
 from segmentation_metrics.boundary_iou import (
     DEFAULT_DILATION_RATIO,
+    boundary_iou,
     boundary_region,
     dilation_pixels,
 )
@@ -93,3 +94,84 @@ class TestBoundaryRegion:
             np.testing.assert_array_equal(
                 boundary_region(mask, dilation), _reference_boundary(mask, dilation)
             )
+
+
+def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+    union = np.count_nonzero(a | b)
+    return float("nan") if union == 0 else np.count_nonzero(a & b) / union
+
+
+def _square(size: int, offset: int, image: int = 400) -> np.ndarray:
+    mask = np.zeros((image, image), bool)
+    mask[offset : offset + size, offset : offset + size] = True
+    return mask
+
+
+class TestBoundaryIoU:
+    def test_identical_masks_score_one(self):
+        mask = _square(160, 120)
+        assert boundary_iou(mask, mask) == pytest.approx(1.0)
+
+    def test_disjoint_masks_score_zero(self):
+        a = np.zeros((64, 64), bool); a[2:10, 2:10] = True
+        b = np.zeros((64, 64), bool); b[50:60, 50:60] = True
+        assert boundary_iou(a, b) == 0.0
+
+    def test_both_empty_is_nan(self):
+        empty = np.zeros((64, 64), bool)
+        assert np.isnan(boundary_iou(empty, empty))
+
+    def test_one_empty_scores_zero(self):
+        mask = _square(160, 120)
+        assert boundary_iou(mask, np.zeros_like(mask)) == 0.0
+
+    def test_shape_mismatch_raises(self):
+        with pytest.raises(ValueError):
+            boundary_iou(np.zeros((8, 8), bool), np.zeros((8, 9), bool))
+
+    def test_non_2d_input_raises(self):
+        with pytest.raises(ValueError):
+            boundary_iou(np.zeros((2, 8, 8), bool), np.zeros((2, 8, 8), bool))
+
+    def test_full_ratio_degenerates_to_mask_iou(self):
+        """dilation_ratio=1.0 makes the band the entire mask, so the metric
+        must reduce exactly to plain mask IoU."""
+        a, b = _square(160, 20), _square(160, 25)
+        assert boundary_iou(a, b, dilation_ratio=1.0) == pytest.approx(_mask_iou(a, b))
+
+    def test_penalises_a_shift_more_than_mask_iou(self):
+        a, b = _square(160, 20), _square(160, 25)   # 5-pixel diagonal shift
+        assert _mask_iou(a, b) == pytest.approx(0.8841, abs=1e-4)
+        assert boundary_iou(a, b) == pytest.approx(0.3822, abs=1e-4)
+
+    def test_is_symmetric(self):
+        a, b = _square(160, 20), _square(160, 25)
+        assert boundary_iou(a, b) == pytest.approx(boundary_iou(b, a))
+
+    def test_is_insensitive_to_object_scale(self):
+        """The paper's central claim. For a fixed 5-pixel shift, mask IoU
+        improves steeply as the object grows, while Boundary IoU stays flat."""
+        sizes = (40, 80, 160, 320)
+        mask_scores, boundary_scores = [], []
+        for size in sizes:
+            offset = (400 - size) // 2
+            a, b = _square(size, offset), _square(size, offset + 5)
+            mask_scores.append(_mask_iou(a, b))
+            boundary_scores.append(boundary_iou(a, b))
+
+        assert mask_scores == sorted(mask_scores)          # rises with size
+        assert mask_scores[0] < 0.65 and mask_scores[-1] > 0.93
+        assert max(boundary_scores) - min(boundary_scores) < 0.05
+        assert all(0.37 < s < 0.42 for s in boundary_scores)
+
+    def test_thresholds_float_probability_masks(self):
+        soft_pred = np.where(_square(160, 120), 0.9, 0.1)
+        soft_gt = np.where(_square(160, 120), 0.7, 0.2)
+        assert boundary_iou(soft_pred, soft_gt, threshold=0.5) == pytest.approx(1.0)
+
+    def test_selects_one_class_from_an_integer_label_map(self):
+        labels = np.zeros((64, 64), np.int32)
+        labels[10:30, 10:30] = 1
+        labels[40:60, 40:60] = 2
+        assert boundary_iou(labels, labels, label=2) == pytest.approx(1.0)
+        assert boundary_iou(labels, np.zeros_like(labels), label=2) == 0.0

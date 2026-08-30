@@ -27,6 +27,8 @@ from __future__ import annotations
 import numpy as np
 from scipy.ndimage import distance_transform_cdt
 
+from segmentation_metrics.volume import as_mask
+
 DEFAULT_DILATION_RATIO = 0.02
 """Paper default: boundary band width as a fraction of the image diagonal."""
 
@@ -69,3 +71,54 @@ def boundary_region(mask: np.ndarray, dilation: int) -> np.ndarray:
     padded = np.pad(m, 1).astype(np.uint8)
     distance = distance_transform_cdt(padded, metric="chessboard")[1:-1, 1:-1]
     return m & (distance <= dilation)
+
+
+def boundary_iou(
+    pred: np.ndarray,
+    gt: np.ndarray,
+    *,
+    dilation_ratio: float = DEFAULT_DILATION_RATIO,
+    label: int = 1,
+    threshold: float = 0.5,
+) -> float:
+    """Boundary IoU between two 2D masks: IoU restricted to the contour bands.
+
+    Range [0, 1]; 1.0 = the two contours coincide within the band width. Unlike
+    mask IoU, the score does not improve just because the object is large.
+
+    Args:
+        pred: 2D predicted mask (bool, float probabilities in [0, 1], or an
+            integer label map).
+        gt: 2D reference mask, same shape and convention as `pred`.
+        dilation_ratio: band width as a fraction of the image diagonal. Larger
+            values are more forgiving; at 1.0 the metric equals mask IoU.
+        label: for integer label maps, which class to score one-vs-rest.
+        threshold: for float masks, the binarization cutoff (`value >= threshold`).
+
+    Returns:
+        The Boundary IoU, or NaN when both contour bands are empty (i.e. both
+        masks are empty) and the score is undefined.
+
+    Raises:
+        ValueError: if the shapes differ or the inputs are not 2D.
+    """
+    pred = np.asarray(pred)
+    gt = np.asarray(gt)
+    if pred.shape != gt.shape:
+        raise ValueError(
+            f"pred and gt shapes must match, got pred={pred.shape}, gt={gt.shape}"
+        )
+    if pred.ndim != 2:
+        raise ValueError(f"boundary_iou expects 2D masks, got shape {pred.shape}")
+
+    pred_mask = as_mask(pred, label, threshold)
+    gt_mask = as_mask(gt, label, threshold)
+
+    dilation = dilation_pixels(pred_mask.shape, dilation_ratio)
+    pred_band = boundary_region(pred_mask, dilation)
+    gt_band = boundary_region(gt_mask, dilation)
+
+    union = int(np.count_nonzero(pred_band | gt_band))
+    if union == 0:
+        return float("nan")
+    return float(np.count_nonzero(pred_band & gt_band)) / union
