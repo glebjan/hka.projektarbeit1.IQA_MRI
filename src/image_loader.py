@@ -1,5 +1,6 @@
 """Image loading: format-specific decoders, ImageLoader, filename matching."""
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -9,6 +10,29 @@ import pydicom
 import SimpleITK as sitk
 import torch
 from PIL import Image
+
+Spacing = tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class LoadedImage:
+    """A decoded image plus the geometry the decoder knew about.
+
+    Attributes:
+        tensor:        (D, 1, H, W) float32 in [0, 1].
+        spacing:       physical voxel size as (dz, dy, dx) in millimetres,
+                       ordered to match the tensor's axes. None when the format
+                       carries no geometry (PNG/JPEG) or when the depth axis is
+                       not spatial.
+        is_volumetric: True only when the depth axis is a real spatial axis with
+                       more than one slice. False for 2D formats, for a single
+                       slice, and for 4D NIfTI (whose depth axis mixes time and
+                       space, see `_load_nifti`).
+    """
+    tensor:        torch.Tensor
+    spacing:       Optional[Spacing] = None
+    is_volumetric: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Format-specific loaders
@@ -21,9 +45,9 @@ def _to_normalized_channel_tensor(depth_first_array: np.ndarray) -> torch.Tensor
     return torch.from_numpy(arr).unsqueeze(1)
 
 
-def _load_pil(path: Path) -> torch.Tensor:
+def _load_pil(path: Path) -> LoadedImage:
     grayscale = np.asarray(Image.open(path).convert("L"))
-    return _to_normalized_channel_tensor(grayscale[np.newaxis])
+    return LoadedImage(_to_normalized_channel_tensor(grayscale[np.newaxis]))
 
 
 def _dicom_array_to_depth_first(pixel_array: np.ndarray, photometric: str) -> np.ndarray:
@@ -42,7 +66,7 @@ def _dicom_array_to_depth_first(pixel_array: np.ndarray, photometric: str) -> np
     raise ValueError(f"Unsupported DICOM pixel_array shape {pixel_array.shape}")
 
 
-def _load_dicom(path: Path) -> torch.Tensor:
+def _load_dicom(path: Path) -> LoadedImage:
     dicom_dataset = pydicom.dcmread(str(path))
     photometric = str(getattr(dicom_dataset, "PhotometricInterpretation", "MONOCHROME2"))
     pixel_array = _dicom_array_to_depth_first(
@@ -53,30 +77,66 @@ def _load_dicom(path: Path) -> torch.Tensor:
     pixel_array = pixel_array * slope + intercept
     if photometric == "MONOCHROME1":
         pixel_array = pixel_array.max() - pixel_array
-    return _to_normalized_channel_tensor(pixel_array)
+
+    # PixelSpacing is [row spacing, column spacing] = (dy, dx).
+    pixel_spacing = getattr(dicom_dataset, "PixelSpacing", None)
+    thickness = getattr(dicom_dataset, "SliceThickness", None)
+    spacing: Optional[Spacing] = None
+    if pixel_spacing is not None and thickness:
+        spacing = (float(thickness), float(pixel_spacing[0]), float(pixel_spacing[1]))
+
+    # A cine series stacks frames over time, not over space. FrameTime / CineRate
+    # are the usual markers; without them a multi-frame series is taken as spatial.
+    is_cine = hasattr(dicom_dataset, "FrameTime") or hasattr(dicom_dataset, "CineRate")
+    depth = int(pixel_array.shape[0])
+    return LoadedImage(
+        _to_normalized_channel_tensor(pixel_array),
+        spacing,
+        is_volumetric=(depth > 1 and spacing is not None and not is_cine),
+    )
 
 
-def _load_nifti(path: Path) -> torch.Tensor:
-    data = nib.as_closest_canonical(nib.load(str(path))).get_fdata()
+def _load_nifti(path: Path) -> LoadedImage:
+    image = nib.as_closest_canonical(nib.load(str(path)))
+    data = image.get_fdata()
+    zooms = image.header.get_zooms()
     if data.ndim == 3:
         depth_first = np.transpose(data, (2, 0, 1))
+        # zooms are (dx, dy, dz) for array axes (X, Y, Z); after the transpose
+        # the tensor axes are (Z, X, Y), so the spacing follows as (dz, dx, dy).
+        spacing: Optional[Spacing] = (float(zooms[2]), float(zooms[0]), float(zooms[1]))
+        volumetric = depth_first.shape[0] > 1
     elif data.ndim == 4:
+        # Time and depth are flattened into a single axis here, so that axis is
+        # not spatial and no honest 3-tuple of voxel sizes describes it.
         depth_first = np.transpose(data, (3, 2, 0, 1)).reshape(-1, data.shape[0], data.shape[1])
+        spacing = None
+        volumetric = False
     else:
         raise ValueError(f"Unsupported NIfTI ndim {data.ndim} for {path}")
-    return _to_normalized_channel_tensor(depth_first)
+    return LoadedImage(_to_normalized_channel_tensor(depth_first), spacing, volumetric)
 
 
-def _load_sitk(path: Path) -> torch.Tensor:
-    volume = sitk.GetArrayFromImage(sitk.ReadImage(str(path)))
+def _load_sitk(path: Path) -> LoadedImage:
+    image = sitk.ReadImage(str(path))
+    volume = sitk.GetArrayFromImage(image)
+    raw_spacing = image.GetSpacing()  # (x, y, z) — the reverse of the array's axes
+    spacing: Optional[Spacing] = None
     if volume.ndim == 2:
         volume = volume[np.newaxis]
-    elif volume.ndim != 3:
+    elif volume.ndim == 3:
+        if len(raw_spacing) == 3:
+            spacing = (float(raw_spacing[2]), float(raw_spacing[1]), float(raw_spacing[0]))
+    else:
         raise ValueError(f"Unsupported SimpleITK array shape {volume.shape} for {path}")
-    return _to_normalized_channel_tensor(volume)
+    return LoadedImage(
+        _to_normalized_channel_tensor(volume),
+        spacing,
+        is_volumetric=(spacing is not None and volume.shape[0] > 1),
+    )
 
 
-_LOADERS: dict[str, Callable[[Path], torch.Tensor]] = {
+_LOADERS: dict[str, Callable[[Path], LoadedImage]] = {
     ".png":  _load_pil,
     ".jpg":  _load_pil,
     ".jpeg": _load_pil,
@@ -143,13 +203,27 @@ class ImageLoader:
         self.suffix = canonical_suffix(path)
         if self.suffix not in _LOADERS:
             raise ValueError(f"Unsupported format: {path}")
-        self._tensor: Optional[torch.Tensor] = None
+        self._loaded: Optional[LoadedImage] = None
+
+    @property
+    def _image(self) -> LoadedImage:
+        if self._loaded is None:
+            self._loaded = _LOADERS[self.suffix](self.path)
+        return self._loaded
 
     @property
     def tensor(self) -> torch.Tensor:
-        if self._tensor is None:
-            self._tensor = _LOADERS[self.suffix](self.path)
-        return self._tensor
+        return self._image.tensor
+
+    @property
+    def spacing(self) -> Optional[Spacing]:
+        """Physical voxel size (dz, dy, dx) in mm, or None if the format has none."""
+        return self._image.spacing
+
+    @property
+    def is_volumetric(self) -> bool:
+        """True when the depth axis is a real spatial axis with more than one slice."""
+        return self._image.is_volumetric
 
     @property
     def rgb_tensor(self) -> torch.Tensor:

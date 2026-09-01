@@ -62,7 +62,7 @@ class TestLoadPil:
         arr = np.random.default_rng(0).integers(0, 256, (64, 64), dtype="uint8")
         p = tmp_path / "img.png"
         Image.fromarray(arr).save(p)
-        t = _load_pil(p)
+        t = _load_pil(p).tensor
         assert t.shape == (1, 1, 64, 64)
         assert float(t.min()) >= 0.0
         assert float(t.max()) <= 1.0 + 1e-6
@@ -71,7 +71,7 @@ class TestLoadPil:
         arr = np.random.default_rng(1).integers(0, 256, (32, 32, 3), dtype="uint8")
         p = tmp_path / "rgb.png"
         Image.fromarray(arr, mode="RGB").save(p)
-        t = _load_pil(p)
+        t = _load_pil(p).tensor
         # Should be (1, 1, H, W) — grayscale
         assert t.shape == (1, 1, 32, 32)
 
@@ -154,7 +154,7 @@ class TestLoadDicom:
         arr = np.random.default_rng(0).integers(100, 2000, (64, 64), dtype=np.uint16)
         p = self._make_dicom(tmp_path / "test.dcm", arr)
         from image_loader import _load_dicom
-        t = _load_dicom(p)
+        t = _load_dicom(p).tensor
         assert t.shape[1] == 1  # channel dim
         assert float(t.min()) >= 0.0
         assert float(t.max()) <= 1.0 + 1e-6
@@ -164,7 +164,7 @@ class TestLoadDicom:
         arr[:32, :] = 1000
         p = self._make_dicom(tmp_path / "m1.dcm", arr, photometric="MONOCHROME1")
         from image_loader import _load_dicom
-        t = _load_dicom(p)
+        t = _load_dicom(p).tensor
         # After MONOCHROME1 inversion the originally-bright top half should now
         # have lower normalised values than the originally-dark bottom half.
         top_mean = float(t[0, 0, :32, :].mean())
@@ -182,7 +182,7 @@ class TestLoadNifti:
         img = nib.Nifti1Image(arr, np.eye(4))
         p = tmp_path / "vol.nii"
         nib.save(img, str(p))
-        t = _load_nifti(p)
+        t = _load_nifti(p).tensor
         # 3D: (H, W, D) → depth_first (D, H, W) → (D, 1, H, W)
         assert t.ndim == 4
         assert t.shape[1] == 1
@@ -192,7 +192,7 @@ class TestLoadNifti:
         img = nib.Nifti1Image(arr, np.eye(4))
         p = tmp_path / "vol4d.nii"
         nib.save(img, str(p))
-        t = _load_nifti(p)
+        t = _load_nifti(p).tensor
         assert t.ndim == 4
         assert t.shape[1] == 1
 
@@ -215,7 +215,7 @@ class TestLoadSitk:
         itk_img = sitk.GetImageFromArray(arr)
         p = tmp_path / "vol.mha"
         sitk.WriteImage(itk_img, str(p))
-        t = _load_sitk(p)
+        t = _load_sitk(p).tensor
         assert t.ndim == 4 and t.shape[1] == 1
 
     def test_2d_mha_gets_depth_dim(self, tmp_path):
@@ -223,7 +223,7 @@ class TestLoadSitk:
         itk_img = sitk.GetImageFromArray(arr)
         p = tmp_path / "slice.mha"
         sitk.WriteImage(itk_img, str(p))
-        t = _load_sitk(p)
+        t = _load_sitk(p).tensor
         assert t.shape == (1, 1, 64, 64)
 
 

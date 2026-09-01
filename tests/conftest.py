@@ -61,3 +61,40 @@ def fake_metric():
         return [float(inp[i].mean()) for i in range(inp.shape[0])]
 
     return _metric
+
+
+@pytest.fixture()
+def nifti_volume(tmp_path: Path) -> Path:
+    """A 3D NIfTI with anisotropic voxels: 1.0 x 1.0 x 1.2 mm, shape (X=8, Y=10, Z=6)."""
+    import nibabel as nib
+
+    data = np.random.default_rng(3).random((8, 10, 6)).astype("float32")
+    affine = np.diag([1.0, 1.0, 1.2, 1.0])
+    p = tmp_path / "vol.nii.gz"
+    nib.save(nib.Nifti1Image(data, affine), p)
+    return p
+
+
+@pytest.fixture()
+def nifti_4d(tmp_path: Path) -> Path:
+    """A 4D NIfTI (X=8, Y=10, Z=6, T=3) — depth and time get flattened on load."""
+    import nibabel as nib
+
+    data = np.random.default_rng(4).random((8, 10, 6, 3)).astype("float32")
+    affine = np.diag([1.0, 1.0, 1.2, 1.0])
+    p = tmp_path / "vol4d.nii.gz"
+    nib.save(nib.Nifti1Image(data, affine), p)
+    return p
+
+
+@pytest.fixture()
+def sitk_volume(tmp_path: Path) -> Path:
+    """A 3D volume written with SimpleITK, spacing (x=0.5, y=0.5, z=2.0) mm."""
+    import SimpleITK as sitk
+
+    arr = np.random.default_rng(5).random((6, 10, 8)).astype("float32")  # (z, y, x)
+    img = sitk.GetImageFromArray(arr)
+    img.SetSpacing((0.5, 0.5, 2.0))
+    p = tmp_path / "vol.nrrd"
+    sitk.WriteImage(img, str(p))
+    return p
