@@ -65,11 +65,15 @@ def fake_metric():
 
 @pytest.fixture()
 def nifti_volume(tmp_path: Path) -> Path:
-    """A 3D NIfTI with anisotropic voxels: 1.0 x 1.0 x 1.2 mm, shape (X=8, Y=10, Z=6)."""
+    """A 3D NIfTI with fully anisotropic voxels: 1.0 x 1.5 x 1.2 mm, shape (X=8, Y=10, Z=6).
+
+    All three voxel sizes are distinct so a transposed axis order in the decoder's
+    spacing tuple is detectable, not just a depth-vs-in-plane mixup.
+    """
     import nibabel as nib
 
     data = np.random.default_rng(3).random((8, 10, 6)).astype("float32")
-    affine = np.diag([1.0, 1.0, 1.2, 1.0])
+    affine = np.diag([1.0, 1.5, 1.2, 1.0])
     p = tmp_path / "vol.nii.gz"
     nib.save(nib.Nifti1Image(data, affine), p)
     return p
@@ -89,12 +93,16 @@ def nifti_4d(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def sitk_volume(tmp_path: Path) -> Path:
-    """A 3D volume written with SimpleITK, spacing (x=0.5, y=0.5, z=2.0) mm."""
+    """A 3D volume written with SimpleITK, fully anisotropic spacing (x=0.5, y=0.75, z=2.0) mm.
+
+    All three voxel sizes are distinct so a transposed axis order in the decoder's
+    spacing tuple is detectable, not just a depth-vs-in-plane mixup.
+    """
     import SimpleITK as sitk
 
     arr = np.random.default_rng(5).random((6, 10, 8)).astype("float32")  # (z, y, x)
     img = sitk.GetImageFromArray(arr)
-    img.SetSpacing((0.5, 0.5, 2.0))
+    img.SetSpacing((0.5, 0.75, 2.0))
     p = tmp_path / "vol.nrrd"
     sitk.WriteImage(img, str(p))
     return p
