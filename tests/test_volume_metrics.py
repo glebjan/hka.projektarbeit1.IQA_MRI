@@ -90,3 +90,33 @@ class TestUndefined:
         pred, _ = _pair_5d()
         with pytest.raises(ValueError, match="target"):
             MetricRegistry(VS).get_metric("vs", "volume", None)(pred)
+
+
+class TestCrossCheck:
+    def test_volume_dice_equals_aggregated_slice_dice(self, tmp_path):
+        """Volume-mode dice and aggregate_volumes()'s dice must agree exactly."""
+        import nibabel as nib
+        from main import evaluate
+        from metrics import MetricRegistry
+        from segmentation_metrics.monai_metrics import DICE
+        from segmentation_metrics.volume_metrics import TP, V_GT, V_PRED
+
+        gt = np.zeros((12, 12, 6), dtype="float32")
+        gt[3:9, 3:9, 1:5] = 1.0
+        pred = np.zeros_like(gt)
+        pred[4:10, 3:9, 1:5] = 1.0
+        affine = np.diag([1.0, 1.0, 1.0, 1.0])
+        gt_path = tmp_path / "case_gt.nii.gz"
+        pred_path = tmp_path / "case_pred.nii.gz"
+        nib.save(nib.Nifti1Image(pred, affine), pred_path)
+        nib.save(nib.Nifti1Image(gt, affine), gt_path)
+
+        volume_dice = evaluate(
+            pred_path, gt_path, registry=MetricRegistry(DICE), mode="volume"
+        ).to_frame().iloc[0]["dice"]
+
+        aggregated = evaluate(
+            pred_path, gt_path, registry=MetricRegistry(V_PRED, V_GT, TP), mode="slice"
+        ).aggregate_volumes().iloc[0]["dice"]
+
+        assert volume_dice == pytest.approx(aggregated, abs=1e-6)
