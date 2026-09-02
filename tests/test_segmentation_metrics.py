@@ -186,3 +186,64 @@ class TestPanopticQualityMetricBuilder:
         pred, gt = _binary_batch(n=2)
         scores = metric(pred, gt)
         assert len(scores) == 2
+
+
+# ---------------------------------------------------------------------------
+# Volume mode
+# ---------------------------------------------------------------------------
+
+import torch
+from metrics import MetricRegistry, ModeSupport
+from segmentation_metrics.monai_metrics import (
+    ASSD, DICE, HAUSDORFF95, NSD, PANOPTIC_QUALITY, hausdorff95_metric,
+)
+
+
+def _volume_pair(shape=(1, 1, 6, 12, 12)):
+    """(pred, gt) 5D binary volumes; pred is gt shifted by one voxel along x."""
+    gt = torch.zeros(shape)
+    gt[..., 2:4, 3:9, 3:9] = 1.0
+    pred = torch.zeros(shape)
+    pred[..., 2:4, 3:9, 4:10] = 1.0
+    return pred, gt
+
+
+class TestSegmentationVolumeMode:
+    def test_all_five_support_volume(self):
+        for spec in (DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY):
+            assert isinstance(spec.volume_mode, ModeSupport), spec.name
+
+    def test_dice_scores_a_five_dimensional_sample(self):
+        metric = MetricRegistry(DICE).get_metric("dice", "volume", (1.0, 1.0, 1.0))
+        pred, gt = _volume_pair()
+        scores = metric(pred, gt)
+        assert len(scores) == 1
+        assert 0.0 < scores[0] < 1.0
+
+    def test_panoptic_quality_scores_a_five_dimensional_sample(self):
+        metric = MetricRegistry(PANOPTIC_QUALITY).get_metric("panoptic_quality", "volume", None)
+        pred, gt = _volume_pair()
+        assert len(metric(pred, gt)) == 1
+
+    def test_spacing_changes_hausdorff_distance(self):
+        pred, gt = _volume_pair()
+        isotropic = MetricRegistry(HAUSDORFF95).get_metric("hausdorff95", "volume", (1.0, 1.0, 1.0))
+        coarse    = MetricRegistry(HAUSDORFF95).get_metric("hausdorff95", "volume", (1.0, 1.0, 3.0))
+        assert coarse(pred, gt)[0] > isotropic(pred, gt)[0]
+
+    def test_missing_spacing_falls_back_to_voxel_units(self):
+        pred, gt = _volume_pair()
+        metric = MetricRegistry(HAUSDORFF95).get_metric("hausdorff95", "volume", None)
+        assert metric(pred, gt)[0] > 0.0
+
+    def test_explicit_builder_spacing_wins_over_runtime_spacing(self):
+        pred, gt = _volume_pair()
+        spec = hausdorff95_metric(spacing=(1.0, 1.0, 1.0))
+        pinned = MetricRegistry(spec).get_metric("hausdorff95", "volume", (1.0, 1.0, 5.0))
+        free   = MetricRegistry(HAUSDORFF95).get_metric("hausdorff95", "volume", (1.0, 1.0, 1.0))
+        assert pinned(pred, gt)[0] == pytest.approx(free(pred, gt)[0])
+
+    def test_slice_mode_still_works(self):
+        metric = MetricRegistry(DICE).get_metric("dice")
+        pred, gt = _volume_pair((4, 1, 12, 12))
+        assert len(metric(pred, gt)) == 4

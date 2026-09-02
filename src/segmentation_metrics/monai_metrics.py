@@ -43,9 +43,41 @@ from monai.metrics import (
     compute_surface_dice,
 )
 
-from metrics import MetricSpec, ModeSupport
+from metrics import MetricSpec, ModeSupport, Spacing
 
 DOMAIN_MEDICAL = "medical (MONAI)"
+
+
+def _volume_factory(
+    compute_fn: Callable[..., torch.Tensor],
+    *,
+    threshold: Optional[float],
+    uses_spacing: bool,
+    **monai_kwargs,
+) -> Callable[[Optional[Spacing]], "MonaiSegmentationMetric"]:
+    """Build the volume-mode factory for one MONAI functional metric.
+
+    `uses_spacing` marks the distance metrics (HD95, NSD, ASSD), which convert
+    voxel counts to physical units. An explicit `spacing` passed to the builder
+    always wins: the user pinned it deliberately, and silently replacing it with
+    whatever the current file happens to say would be worse than ignoring the
+    file.
+    """
+    def build(spacing: Optional[Spacing]) -> "MonaiSegmentationMetric":
+        kwargs = dict(monai_kwargs)
+        if uses_spacing:
+            if spacing is not None:
+                kwargs.setdefault("spacing", list(spacing))
+            elif "spacing" not in kwargs:
+                print(
+                    "[warning] no voxel size available, so this distance is "
+                    "counted in voxels rather than millimetres. Values are "
+                    "comparable between images on the same grid, but not "
+                    "between images recorded at different resolutions."
+                )
+        return MonaiSegmentationMetric(compute_fn, threshold=threshold, **kwargs)
+
+    return build
 
 
 class MonaiSegmentationMetric:
@@ -62,6 +94,11 @@ class MonaiSegmentationMetric:
     cutoff becomes 1.0, everything else 0.0. Leave `None` (default) if your
     masks are already strictly binary; setting a threshold on data that isn't
     a probability map will silently corrupt scores.
+
+    In volume mode the adapter receives a single `(1, C, D, H, W)` sample and
+    returns a single score. MONAI's functional metrics accept 4D and 5D input
+    alike, so the adapter itself is unchanged; the distance metrics additionally
+    receive `spacing` so their result is in millimetres rather than voxels.
     """
 
     def __init__(self, compute_fn: Callable[..., torch.Tensor], *, threshold: Optional[float] = None, **monai_kwargs):
@@ -105,6 +142,8 @@ def dice_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricS
         reference=True,
         channels="gray",
         slice_mode=ModeSupport(lambda: metric),
+        volume_mode=ModeSupport(_volume_factory(
+            compute_dice, threshold=threshold, uses_spacing=False, **monai_kwargs)),
         builtin=False,
         description=(
             "Dice similarity coefficient: overlap between predicted and "
@@ -153,6 +192,8 @@ def hausdorff95_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> 
         reference=True,
         channels="gray",
         slice_mode=ModeSupport(lambda: metric),
+        volume_mode=ModeSupport(_volume_factory(
+            compute_hausdorff_distance, threshold=threshold, uses_spacing=True, **monai_kwargs)),
         builtin=False,
         description=(
             "95th-percentile Hausdorff Distance: how far the predicted "
@@ -204,6 +245,8 @@ def normalized_surface_dice_metric(*, threshold: Optional[float] = None, **monai
         reference=True,
         channels="gray",
         slice_mode=ModeSupport(lambda: metric),
+        volume_mode=ModeSupport(_volume_factory(
+            compute_surface_dice, threshold=threshold, uses_spacing=True, **monai_kwargs)),
         builtin=False,
         description=(
             "Normalized Surface Dice: fraction of the predicted and "
@@ -252,6 +295,8 @@ def average_surface_distance_metric(*, threshold: Optional[float] = None, **mona
         reference=True,
         channels="gray",
         slice_mode=ModeSupport(lambda: metric),
+        volume_mode=ModeSupport(_volume_factory(
+            compute_average_surface_distance, threshold=threshold, uses_spacing=True, **monai_kwargs)),
         builtin=False,
         description=(
             "Average Symmetric Surface Distance: mean distance between the "
@@ -331,6 +376,8 @@ def panoptic_quality_metric(*, threshold: Optional[float] = None, **monai_kwargs
         reference=True,
         channels="gray",
         slice_mode=ModeSupport(lambda: metric),
+        volume_mode=ModeSupport(
+            lambda spacing: MonaiPanopticQualityMetric(threshold=threshold, **monai_kwargs)),
         builtin=False,
         description=(
             "Panoptic Quality: combines instance-detection accuracy (are the "
