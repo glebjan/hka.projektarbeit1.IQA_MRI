@@ -355,6 +355,11 @@ class TestBandWidth:
     def test_never_below_one(self):
         assert band_width((2, 2), 0.001) >= 1.0
 
+    def test_voxel_path_rounds_rather_than_truncates(self):
+        """0.1 * hypot(400, 400) = 56.5685 -- round gives 57, truncation gives 56."""
+        assert band_width((400, 400), 0.1) == pytest.approx(57.0)
+        assert band_width((400, 400), 0.1) == pytest.approx(float(dilation_pixels((400, 400), 0.1)))
+
 
 class TestBoundaryIoU3D:
     def test_identical_volumes_score_one(self):
