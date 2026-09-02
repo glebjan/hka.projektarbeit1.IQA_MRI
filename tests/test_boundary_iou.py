@@ -89,9 +89,12 @@ class TestBoundaryRegion:
         band = boundary_region(mask, 2)
         assert np.array_equal(band & mask, band)
 
-    def test_rejects_non_2d_input(self):
-        with pytest.raises(ValueError):
-            boundary_region(np.ones((2, 8, 8), bool), 1)
+    def test_accepts_non_2d_input(self):
+        """boundary_region's ndim guard was removed in Task 6 — nD masks are
+        now handled generically (see TestBoundaryRegion3D for 3D coverage);
+        the shape restriction now lives in boundary_iou instead."""
+        band = boundary_region(np.ones((2, 8, 8), bool), 1)
+        assert band.shape == (2, 8, 8)
 
     @pytest.mark.parametrize("dilation", [1, 2, 3, 5, 9])
     def test_matches_iterated_erosion_reference(self, dilation):
@@ -142,9 +145,17 @@ class TestBoundaryIoU:
         with pytest.raises(ValueError):
             boundary_iou(np.zeros((8, 8), bool), np.zeros((8, 9), bool))
 
-    def test_non_2d_input_raises(self):
+    def test_3d_input_is_now_supported(self):
+        """boundary_iou's guard widened from 2D-only to 2D-or-3D in Task 6
+        (see TestBoundaryIoU3D for full 3D coverage); only ranks outside
+        {2, 3} are still rejected."""
+        mask = np.zeros((2, 8, 8), bool)
+        mask[0, 2:6, 2:6] = True
+        assert boundary_iou(mask, mask) == pytest.approx(1.0)
+
+    def test_non_2d_or_3d_input_raises(self):
         with pytest.raises(ValueError):
-            boundary_iou(np.zeros((2, 8, 8), bool), np.zeros((2, 8, 8), bool))
+            boundary_iou(np.zeros((1, 2, 8, 8), bool), np.zeros((1, 2, 8, 8), bool))
 
     def test_full_ratio_degenerates_to_mask_iou(self):
         """dilation_ratio=1.0 makes the band the entire mask, so the metric
@@ -286,3 +297,113 @@ class TestFrameworkRegistration:
         metric = registry.get_metric("boundary_iou")
         mask = _square(160, 120)
         assert metric(_batch([mask]), _batch([mask]))[0] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# nD boundary bands and volume mode
+# ---------------------------------------------------------------------------
+
+from metrics import MetricRegistry, ModeSupport
+from segmentation_metrics.boundary_iou import band_width
+
+
+def _cube(shape=(10, 20, 20), lo=(2, 5, 5), hi=(8, 15, 15)):
+    m = np.zeros(shape, dtype=bool)
+    m[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]] = True
+    return m
+
+
+class TestBoundaryRegion3D:
+    def test_accepts_a_3d_mask(self):
+        band = boundary_region(_cube(), 1)
+        assert band.shape == (10, 20, 20)
+        assert band.dtype == bool
+
+    def test_band_is_a_subset_of_the_mask(self):
+        mask = _cube()
+        assert np.all(boundary_region(mask, 2) <= mask)
+
+    def test_band_includes_the_caps(self):
+        """The first and last occupied slice are surface in 3D, unlike in 2D."""
+        mask = _cube()
+        band = boundary_region(mask, 1)
+        assert band[2].any() and band[7].any()
+
+    def test_a_solid_interior_is_excluded(self):
+        mask = np.ones((9, 9, 9), dtype=bool)
+        band = boundary_region(mask, 1)
+        assert not band[4, 4, 4]
+
+    def test_anisotropic_sampling_thins_the_band_along_the_coarse_axis(self):
+        mask = _cube()
+        isotropic = boundary_region(mask, 2, sampling=(1.0, 1.0, 1.0))
+        coarse = boundary_region(mask, 2, sampling=(3.0, 1.0, 1.0))
+        assert coarse.sum() < isotropic.sum()
+
+
+class TestBandWidth:
+    def test_without_spacing_it_matches_the_pixel_diagonal(self):
+        # Voxel/chessboard path rounds to the nearest integer (see
+        # dilation_pixels); the physical path below does not.
+        assert band_width((256, 256), 0.02) == pytest.approx(round(0.02 * np.hypot(256, 256)))
+
+    def test_with_spacing_it_uses_physical_extent(self):
+        # extent = (130*1.2, 256*1.0, 256*1.0) mm
+        expected = 0.02 * float(np.linalg.norm([130 * 1.2, 256.0, 256.0]))
+        assert band_width((130, 256, 256), 0.02, (1.2, 1.0, 1.0)) == pytest.approx(expected)
+
+    def test_never_below_one(self):
+        assert band_width((2, 2), 0.001) >= 1.0
+
+
+class TestBoundaryIoU3D:
+    def test_identical_volumes_score_one(self):
+        mask = _cube()
+        assert boundary_iou(mask, mask) == pytest.approx(1.0)
+
+    def test_shifted_volume_scores_below_one(self):
+        gt = _cube()
+        pred = _cube(lo=(2, 6, 5), hi=(8, 16, 15))
+        assert boundary_iou(pred, gt) < 1.0
+
+    def test_both_empty_is_nan(self):
+        empty = np.zeros((6, 8, 8), dtype=bool)
+        assert np.isnan(boundary_iou(empty, empty))
+
+    def test_shape_mismatch_raises(self):
+        with pytest.raises(ValueError, match="shapes"):
+            boundary_iou(_cube(), _cube(shape=(10, 20, 21)))
+
+
+class TestTwoDimensionalPathUnchanged:
+    def test_chessboard_band_is_used_without_spacing(self):
+        from scipy.ndimage import distance_transform_cdt
+
+        mask = np.zeros((40, 40), dtype=bool)
+        mask[8:32, 8:32] = True
+        padded = np.pad(mask, 1).astype(np.uint8)
+        expected = mask & (distance_transform_cdt(padded, metric="chessboard")[1:-1, 1:-1] <= 3)
+        assert np.array_equal(boundary_region(mask, 3), expected)
+
+
+class TestBoundaryIoUVolumeMode:
+    def test_spec_supports_volume(self):
+        assert isinstance(BOUNDARY_IOU.volume_mode, ModeSupport)
+
+    def test_registry_passes_spacing_into_the_adapter(self):
+        metric = MetricRegistry(BOUNDARY_IOU).get_metric("boundary_iou", "volume", (1.2, 1.0, 1.0))
+        assert isinstance(metric, BoundaryIoUMetric)
+        assert metric._spacing == (1.2, 1.0, 1.0)
+
+    def test_scores_a_five_dimensional_sample(self):
+        gt = torch.from_numpy(_cube().astype("float32")).unsqueeze(0).unsqueeze(0)
+        pred = torch.from_numpy(_cube(lo=(2, 6, 5), hi=(8, 16, 15)).astype("float32")).unsqueeze(0).unsqueeze(0)
+        metric = MetricRegistry(BOUNDARY_IOU).get_metric("boundary_iou", "volume", (1.0, 1.0, 1.0))
+        scores = metric(pred, gt)
+        assert len(scores) == 1
+        assert 0.0 <= scores[0] <= 1.0
+
+    def test_falls_back_without_spacing(self):
+        gt = torch.from_numpy(_cube().astype("float32")).unsqueeze(0).unsqueeze(0)
+        metric = MetricRegistry(BOUNDARY_IOU).get_metric("boundary_iou", "volume", None)
+        assert metric(gt, gt)[0] == pytest.approx(1.0)

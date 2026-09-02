@@ -22,6 +22,15 @@ Reference: Bowen Cheng, Ross Girshick, Piotr Dollar, Alexander C. Berg,
 Alexander Kirillov. "Boundary IoU: Improving Object-Centric Image Segmentation
 Evaluation." CVPR 2021.
 
+In volume mode the band is measured in physical units via a euclidean distance
+transform with `sampling=spacing`, because a band of `d` voxels is physically
+thicker along a coarse axis — on 1x1x1.2 mm data, 8 mm in-plane against 9.6 mm
+through-plane — which makes the metric more forgiving in exactly the direction
+where through-plane errors occur. Without spacing it falls back to the paper's
+voxel/chessboard band. The 2D path is unchanged and stays bit-identical to
+Cheng et al.; a cubic band and a ball-shaped band are not directly comparable,
+so slice-mode and volume-mode scores should not be compared with each other.
+
 Usage: import `metrics` before this module — `metrics` late-imports
 `segmentation_metrics.*`, which import `MetricSpec` back from `metrics`, so
 importing this module first raises a partially-initialized-module error.
@@ -35,7 +44,7 @@ from typing import Optional
 
 import numpy as np
 import torch
-from scipy.ndimage import distance_transform_cdt
+from scipy.ndimage import distance_transform_cdt, distance_transform_edt
 
 from metrics import MetricSpec, ModeSupport
 from segmentation_metrics.volume import as_mask
@@ -44,13 +53,44 @@ DEFAULT_DILATION_RATIO = 0.02
 """Paper default: boundary band width as a fraction of the image diagonal."""
 
 
+def band_width(
+    shape: tuple[int, ...],
+    dilation_ratio: float = DEFAULT_DILATION_RATIO,
+    spacing: Optional[tuple[float, ...]] = None,
+) -> float:
+    """Boundary band width for a mask of `shape`, floored at 1.
+
+    Without `spacing` the width is a fraction of the diagonal in voxels,
+    rounded to the nearest whole voxel — the paper's definition, and the same
+    value `dilation_pixels` returns; chessboard distances are integers, so
+    thresholding at anything else would silently shift the band. With
+    `spacing` it is a fraction of the diagonal in millimetres, left
+    un-rounded since a physical width has no reason to be a whole number of
+    anything; this keeps the band equally thick along every axis on
+    anisotropic data instead of widening it along the coarse one.
+
+    Args:
+        shape: the mask's shape, 2D or 3D.
+        dilation_ratio: fraction of the diagonal (paper default 0.02).
+        spacing: physical size per axis, same length as `shape`.
+    """
+    extent = np.asarray(shape, dtype=float)
+    if spacing is not None:
+        extent = extent * np.asarray(spacing, dtype=float)
+        return max(1.0, dilation_ratio * float(np.linalg.norm(extent)))
+    return float(max(1, round(dilation_ratio * float(np.linalg.norm(extent)))))
+
+
 def dilation_pixels(
     shape: tuple[int, int], dilation_ratio: float = DEFAULT_DILATION_RATIO
 ) -> int:
-    """Boundary band width in pixels for an image of `shape`.
+    """Boundary band width in whole pixels — the paper's 2D definition.
 
     `dilation_ratio` of the image diagonal, rounded, with a floor of 1 pixel so
     that small images still get a band.
+
+    Kept for the 2D path and for callers that want an integer pixel count;
+    `band_width` is the general form.
 
     Args:
         shape: (height, width) of the mask.
@@ -60,27 +100,43 @@ def dilation_pixels(
     return max(1, int(round(dilation_ratio * float(np.hypot(h, w)))))
 
 
-def boundary_region(mask: np.ndarray, dilation: int) -> np.ndarray:
-    """The `dilation`-pixel-wide band lying just inside `mask`'s contour.
+def boundary_region(
+    mask: np.ndarray,
+    dilation: float,
+    sampling: Optional[tuple[float, ...]] = None,
+) -> np.ndarray:
+    """The band of width `dilation` lying just inside `mask`'s contour.
 
-    Equivalent to `mask & ~erode(mask, dilation)` with a (2*dilation+1)-square
-    structuring element, computed via one chessboard distance transform.
+    Without `sampling` this is `mask & ~erode(mask, dilation)` with a
+    (2*dilation+1)-cubic structuring element, via one chessboard distance
+    transform — Cheng et al.'s definition, and bit-identical to the previous
+    2D implementation.
+
+    With `sampling` the distance is euclidean and measured in physical units,
+    so the band is a ball of radius `dilation` millimetres rather than a cube
+    of `dilation` voxels. On anisotropic data that is the difference between
+    a band that is equally thick everywhere and one that is thicker along the
+    coarse axis.
+
+    The one-voxel zero pad supplies the background ring that makes an object
+    clipped by the array border count that clipped edge as boundary.
 
     Args:
-        mask: 2D array, coerced to bool.
-        dilation: band width in pixels (see `dilation_pixels`).
+        mask: 2D or 3D array, coerced to bool.
+        dilation: band width, in voxels without `sampling`, in physical units
+            with it.
+        sampling: physical size per axis, same length as `mask.ndim`.
 
     Returns:
-        2D bool array, always a subset of `mask`.
-
-    Raises:
-        ValueError: if `mask` is not 2D.
+        Bool array of `mask`'s shape, always a subset of `mask`.
     """
     m = np.asarray(mask, dtype=bool)
-    if m.ndim != 2:
-        raise ValueError(f"boundary_region expects a 2D mask, got shape {m.shape}")
     padded = np.pad(m, 1).astype(np.uint8)
-    distance = distance_transform_cdt(padded, metric="chessboard")[1:-1, 1:-1]
+    interior = (slice(1, -1),) * m.ndim
+    if sampling is None:
+        distance = distance_transform_cdt(padded, metric="chessboard")[interior]
+    else:
+        distance = distance_transform_edt(padded, sampling=sampling)[interior]
     return m & (distance <= dilation)
 
 
@@ -91,27 +147,30 @@ def boundary_iou(
     dilation_ratio: float = DEFAULT_DILATION_RATIO,
     label: int = 1,
     threshold: float = 0.5,
+    spacing: Optional[tuple[float, ...]] = None,
 ) -> float:
-    """Boundary IoU between two 2D masks: IoU restricted to the contour bands.
+    """Boundary IoU between two masks: IoU restricted to the contour bands.
 
     Range [0, 1]; 1.0 = the two contours coincide within the band width. Unlike
     mask IoU, the score does not improve just because the object is large.
 
     Args:
-        pred: 2D predicted mask (bool, float probabilities in [0, 1], or an
-            integer label map).
-        gt: 2D reference mask, same shape and convention as `pred`.
+        pred: 2D or 3D predicted mask (bool, float probabilities in [0, 1], or
+            an integer label map).
+        gt: reference mask, same shape and convention as `pred`.
         dilation_ratio: band width as a fraction of the image diagonal. Larger
             values are more forgiving; at 1.0 the metric equals mask IoU.
         label: for integer label maps, which class to score one-vs-rest.
         threshold: for float masks, the binarization cutoff (`value >= threshold`).
+        spacing: physical size per axis. Without it the band is measured in
+            voxels (the paper's definition); with it, in physical units.
 
     Returns:
         The Boundary IoU, or NaN when both contour bands are empty (i.e. both
         masks are empty) and the score is undefined.
 
     Raises:
-        ValueError: if the shapes differ or the inputs are not 2D.
+        ValueError: if the shapes differ or the inputs are not 2D or 3D.
     """
     pred = np.asarray(pred)
     gt = np.asarray(gt)
@@ -119,15 +178,15 @@ def boundary_iou(
         raise ValueError(
             f"pred and gt shapes must match, got pred={pred.shape}, gt={gt.shape}"
         )
-    if pred.ndim != 2:
-        raise ValueError(f"boundary_iou expects 2D masks, got shape {pred.shape}")
+    if pred.ndim not in (2, 3):
+        raise ValueError(f"boundary_iou expects 2D or 3D masks, got shape {pred.shape}")
 
     pred_mask = as_mask(pred, label, threshold)
     gt_mask = as_mask(gt, label, threshold)
 
-    dilation = dilation_pixels(pred_mask.shape, dilation_ratio)
-    pred_band = boundary_region(pred_mask, dilation)
-    gt_band = boundary_region(gt_mask, dilation)
+    width = band_width(pred_mask.shape, dilation_ratio, spacing)
+    pred_band = boundary_region(pred_mask, width, spacing)
+    gt_band = boundary_region(gt_mask, width, spacing)
 
     union = int(np.count_nonzero(pred_band | gt_band))
     if union == 0:
@@ -154,6 +213,10 @@ class BoundaryIoUMetric:
             the band computation needs a boolean array, so a cutoff always
             applies. Masks loaded via `ImageLoader` arrive as exact 0.0/1.0
             floats, for which any cutoff in (0, 1) is equivalent.
+        spacing: physical size per axis. Without it (slice mode) the band is
+            measured in voxels; with it (volume mode) it is measured in
+            physical units, so it stays equally thick along every axis on
+            anisotropic data.
     """
 
     def __init__(
@@ -161,9 +224,11 @@ class BoundaryIoUMetric:
         *,
         dilation_ratio: float = DEFAULT_DILATION_RATIO,
         threshold: float = 0.5,
+        spacing: Optional[tuple[float, ...]] = None,
     ):
         self._dilation_ratio = dilation_ratio
         self._threshold      = threshold
+        self._spacing        = spacing
 
     def __call__(
         self, input: torch.Tensor, target: Optional[torch.Tensor] = None
@@ -181,6 +246,7 @@ class BoundaryIoUMetric:
                 gt[i, 0],
                 dilation_ratio=self._dilation_ratio,
                 threshold=self._threshold,
+                spacing=self._spacing,
             )
             scores.append(None if np.isnan(score) else float(score))
         return scores
@@ -211,6 +277,8 @@ def boundary_iou_metric(
         reference=True,
         channels="gray",
         slice_mode=ModeSupport(lambda: metric),
+        volume_mode=ModeSupport(lambda spacing: BoundaryIoUMetric(
+            dilation_ratio=dilation_ratio, threshold=threshold, spacing=spacing)),
         builtin=False,
         description=(
             "Boundary IoU: intersection-over-union computed on a thin band "
