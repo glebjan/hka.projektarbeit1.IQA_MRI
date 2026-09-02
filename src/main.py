@@ -4,15 +4,37 @@ from typing import Optional
 
 from constants import REPORT
 from evaluation_result import EvaluationResult, _EvaluatedImage
+from evaluator_factory import build_evaluator
 from image_loader import ImageLoader, find_matching_target, list_images
-from iqa_evaluator import IQAEvaluator
 from metrics import (  # noqa: F401 — re-exported for users
-    DEVICE, Metric, MetricSpec, MetricRegistry,
+    DEVICE, Metric, MetricSpec, MetricRegistry, ScoringMode, SkippedMetric,
     PSNR, SSIM, LPIPS, DISTS, RADIMAGENET_LPIPS,
     CLIPIQA, CLIP_IQA_LUNG, CLIP_IQA_BRAIN, BRISQUE, NIQE, BUILTIN_METRICS,
     DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY, BOUNDARY_IOU,
     VS, VS_SIGNED, V_PRED, V_GT, TP, SEGMENTATION_METRICS,
 )
+
+_OTHER_MODE = {"slice": "volume", "volume": "slice"}
+
+
+def report_skipped_metrics(skipped: list[SkippedMetric], mode: ScoringMode) -> None:
+    """Tell the user, once per run, which metrics will not be computed and why.
+
+    Metrics are grouped by reason so a shared explanation is printed once. Prints
+    nothing when nothing is skipped.
+    """
+    if not skipped:
+        return
+    by_reason: dict[str, list[str]] = {}
+    for item in skipped:
+        by_reason.setdefault(item.reason, []).append(item.name)
+
+    print(f"\nSome metrics cannot be scored in {mode} mode and will be skipped.")
+    for reason, names in by_reason.items():
+        print(f"\n  {', '.join(sorted(names))}")
+        print(f"  This metric {reason}.")
+    print(f'\nTo score them, run again with mode="{_OTHER_MODE[mode]}".\n')
+
 
 # ---------------------------------------------------------------------------
 # Top-level evaluation function
@@ -23,6 +45,7 @@ def evaluate(
     target_path: Optional[Path] = None,
     *,
     registry: MetricRegistry,
+    mode: ScoringMode = "slice",
 ) -> EvaluationResult:
     """Discover input/target images and compute one registry's metrics.
 
@@ -33,9 +56,24 @@ def evaluate(
         registry:    The metrics to compute. One instance is shared across
                      every image in the run, so network-backed metrics are
                      built once rather than once per image.
+        mode:        "slice" scores every 2D slice separately and produces one
+                     row per slice; "volume" scores each 3D stack once and
+                     produces one row per volume. Metrics that cannot serve the
+                     chosen mode are skipped with a message; if none can, this
+                     raises.
 
     No files are written; use EvaluationResult.generate_report() for output.
     """
+    applicable, skipped = registry.select(mode)
+    if not applicable:
+        raise ValueError(
+            f"none of the selected metrics can be scored in {mode} mode, so this "
+            f'run would compute nothing. Run again with mode="{_OTHER_MODE[mode]}", '
+            "or pick metrics that work on whole volumes (dice, hausdorff95, nsd, "
+            "assd, panoptic_quality, boundary_iou, vs, psnr, ssim)."
+        )
+    report_skipped_metrics(skipped, mode)
+
     evaluated: list[_EvaluatedImage] = []
 
     def _run_one(inp: Path, tgt: Optional[Path]) -> None:
@@ -46,7 +84,17 @@ def evaluate(
             if tgt is not None:
                 target_loader = ImageLoader(tgt)
                 target_loader.log_tensor_shape()
-            records = IQAEvaluator(input_loader, target_loader, registry).run_evaluation()
+            if mode == "volume" and not input_loader.is_volumetric:
+                print(
+                    f"[{inp.name}] skipped: this is not a 3D volume. Its slices "
+                    "are not stacked along a spatial axis, which is the case for "
+                    "PNG and JPEG images, for a single slice, and for 4D scans "
+                    "whose frames are time steps."
+                )
+                return
+            records = build_evaluator(
+                input_loader, target_loader, registry, mode
+            ).run_evaluation()
             evaluated.append(_EvaluatedImage(input_path=inp, records=records))
         except Exception as exc:
             print(f"[{inp}] evaluation failed: {exc}")
@@ -96,6 +144,10 @@ def main() -> None:
         "target", type=Path, nargs="?", default=None,
         help="Optional reference image file or directory (omit for NR-only evaluation).",
     )
+    parser.add_argument(
+        "--mode", choices=["slice", "volume"], default="slice",
+        help="Score every 2D slice separately (default) or each 3D volume once.",
+    )
     args = parser.parse_args()
 
     # Reference usage: pick the metrics for this run. Swap BUILTIN_METRICS for
@@ -103,7 +155,7 @@ def main() -> None:
     # evaluate something else — each run owns its own registry.
     registry = MetricRegistry(*BUILTIN_METRICS)
 
-    result = evaluate(args.input, args.target, registry=registry)
+    result = evaluate(args.input, args.target, registry=registry, mode=args.mode)
     report = result.generate_report(REPORT)
     print(report.describe())
     print(f"Report written: {REPORT}")

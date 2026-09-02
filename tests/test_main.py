@@ -197,3 +197,92 @@ class TestEvaluateRegistryThreading:
         assert df_psnr["ssim"].isna().all()
         assert df_ssim["ssim"].notna().any()
         assert df_ssim["psnr"].isna().all()
+
+
+# ---------------------------------------------------------------------------
+# Scoring mode
+# ---------------------------------------------------------------------------
+
+import pytest
+
+from main import evaluate, report_skipped_metrics
+from metrics import MetricRegistry, MetricSpec, ModeSupport, ModeUnsupported, SkippedMetric
+
+
+def _spec(name, *, volume, reason="only reads flat pictures"):
+    def make(*_args):
+        return lambda inp, tgt=None: [float(inp[i].mean()) for i in range(inp.shape[0])]
+
+    return MetricSpec(
+        name=name, direction="higher_is_better", reference=False, channels="gray",
+        slice_mode=ModeSupport(make),
+        volume_mode=ModeSupport(make) if volume else ModeUnsupported(reason),
+        builtin=False,
+    )
+
+
+class TestSkipMessage:
+    def test_names_every_skipped_metric(self, capsys):
+        report_skipped_metrics(
+            [SkippedMetric("lpips", "reads flat pictures"),
+             SkippedMetric("niqe", "reads flat pictures")],
+            "volume",
+        )
+        out = capsys.readouterr().out
+        assert "lpips" in out and "niqe" in out
+
+    def test_states_the_reason(self, capsys):
+        report_skipped_metrics([SkippedMetric("lpips", "reads flat pictures")], "volume")
+        assert "reads flat pictures" in capsys.readouterr().out
+
+    def test_names_the_other_mode_as_the_way_out(self, capsys):
+        report_skipped_metrics([SkippedMetric("lpips", "r")], "volume")
+        assert 'mode="slice"' in capsys.readouterr().out
+
+    def test_silent_when_nothing_is_skipped(self, capsys):
+        report_skipped_metrics([], "volume")
+        assert capsys.readouterr().out == ""
+
+
+class TestEvaluateMode:
+    def test_default_is_slice(self, nifti_volume):
+        result = evaluate(nifti_volume, None, registry=MetricRegistry(_spec("m", volume=True)))
+        assert len(result.to_frame()) == 6
+
+    def test_volume_mode_yields_one_row(self, nifti_volume):
+        result = evaluate(nifti_volume, None,
+                          registry=MetricRegistry(_spec("m", volume=True)), mode="volume")
+        df = result.to_frame()
+        assert len(df) == 1
+        assert df.iloc[0]["scoring"] == "volume"
+
+    def test_skip_message_appears_once_per_run(self, tmp_path, nifti_volume, capsys):
+        import shutil
+
+        directory = tmp_path / "many"
+        directory.mkdir()
+        for i in range(3):
+            shutil.copy(nifti_volume, directory / f"vol{i}.nii.gz")
+        # reason deliberately avoids the substring "flat" so the count below
+        # isolates how many times the metric is *reported*, not how many
+        # times the word happens to occur in the explanation text.
+        registry = MetricRegistry(_spec("ok", volume=True), _spec("flat", volume=False, reason="only reads pictures"))
+        evaluate(directory, None, registry=registry, mode="volume")
+        assert capsys.readouterr().out.count("flat") == 1
+
+    def test_hard_error_when_no_metric_can_serve_the_mode(self, nifti_volume):
+        registry = MetricRegistry(_spec("flat", volume=False))
+        with pytest.raises(ValueError, match="none of"):
+            evaluate(nifti_volume, None, registry=registry, mode="volume")
+
+    def test_non_volumetric_files_are_skipped_not_fatal(self, tmp_path, nifti_volume, synthetic_png, capsys):
+        import shutil
+
+        directory = tmp_path / "mixed"
+        directory.mkdir()
+        shutil.copy(nifti_volume, directory / "vol.nii.gz")
+        shutil.copy(synthetic_png, directory / "flat.png")
+        registry = MetricRegistry(_spec("m", volume=True))
+        result = evaluate(directory, None, registry=registry, mode="volume")
+        assert len(result.to_frame()) == 1
+        assert "flat.png" in capsys.readouterr().out
