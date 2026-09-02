@@ -107,6 +107,12 @@ def aggregate_patient(
     Returns a DataFrame indexed by group (or a single row of index 0 when
     `group_col=None`) with columns v_pred, v_gt, tp, vs, vs_signed, dice,
     avd_voxels. Ratio metrics are NaN when their denominator is 0.
+
+    This is the correct way to get volume-level numbers out of a per-slice run:
+    it sums the counts before dividing, so it never averages ratios. A run with
+    `mode="volume"` computes the same quantities directly;
+    `EvaluationResult.aggregate_volumes()` wraps this function for the per-slice
+    case.
     """
     if group_col is None:
         grouped = df[["v_pred", "v_gt", "tp"]].sum(skipna=True).to_frame().T

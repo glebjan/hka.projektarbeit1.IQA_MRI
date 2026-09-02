@@ -10,7 +10,8 @@ from metrics import (  # noqa: F401 — re-exported for users
     DEVICE, Metric, MetricSpec, MetricRegistry,
     PSNR, SSIM, LPIPS, DISTS, RADIMAGENET_LPIPS,
     CLIPIQA, CLIP_IQA_LUNG, CLIP_IQA_BRAIN, BRISQUE, NIQE, BUILTIN_METRICS,
-    DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY, BOUNDARY_IOU, SEGMENTATION_METRICS,
+    DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY, BOUNDARY_IOU,
+    VS, VS_SIGNED, V_PRED, V_GT, TP, SEGMENTATION_METRICS,
 )
 
 # ---------------------------------------------------------------------------

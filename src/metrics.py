@@ -264,6 +264,9 @@ from segmentation_metrics.monai_metrics import (
     DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY,
 )
 from segmentation_metrics.boundary_iou import BOUNDARY_IOU
+from segmentation_metrics.volume_metrics import (
+    VS, VS_SIGNED, V_PRED, V_GT, TP,
+)
 
 
 # Full-reference metrics (need a target image)
@@ -293,5 +296,6 @@ BUILTIN_METRICS = (
 # kept separate from BUILTIN_METRICS so main.py's raw-image CLI is unaffected.
 SEGMENTATION_METRICS = (
     DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY, BOUNDARY_IOU,
+    VS, VS_SIGNED, V_PRED, V_GT, TP,
 )
 
