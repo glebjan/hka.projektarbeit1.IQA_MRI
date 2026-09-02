@@ -244,6 +244,19 @@ def _pyiqa_factory(name: str, **kwargs) -> Callable[[], Metric]:
     return lambda: PyIQAMetric(name, **kwargs)
 
 
+def _volumetric_iqa_factory(kind: str) -> Callable[[Optional[Spacing]], Metric]:
+    """Late-import factory for the MONAI-backed volume metrics.
+
+    Imported inside the function so `metrics` stays importable without MONAI's
+    IQA module being loaded for a slice-only run.
+    """
+    def build(spacing: Optional[Spacing]) -> Metric:
+        from volumetric_iqa import MonaiPSNRMetric, MonaiSSIMMetric
+        return MonaiPSNRMetric() if kind == "psnr" else MonaiSSIMMetric()
+
+    return build
+
+
 # Imported here (rather than alongside the other module-level imports above)
 # to avoid a circular import: monai_metrics.py does `from metrics import
 # MetricSpec`, which requires MetricSpec to already be defined in this module.
@@ -256,10 +269,10 @@ from segmentation_metrics.boundary_iou import BOUNDARY_IOU
 # Full-reference metrics (need a target image)
 PSNR = MetricSpec("psnr", "higher_is_better", True, "gray",
                   ModeSupport(_pyiqa_factory("psnr")),
-                  ModeSupport(lambda spacing: PyIQAMetric("psnr")))
+                  ModeSupport(_volumetric_iqa_factory("psnr")))
 SSIM = MetricSpec("ssim", "higher_is_better", True, "gray",
                   ModeSupport(_pyiqa_factory("ssim")),
-                  ModeSupport(lambda spacing: PyIQAMetric("ssim")))
+                  ModeSupport(_volumetric_iqa_factory("ssim")))
 LPIPS             = MetricSpec("lpips",             "lower_is_better",  True,  "rgb",  ModeSupport(_pyiqa_factory("lpips")),  ModeUnsupported(REASON_DEEP_2D))
 DISTS             = MetricSpec("dists",             "lower_is_better",  True,  "rgb",  ModeSupport(_pyiqa_factory("dists")),  ModeUnsupported(REASON_DEEP_2D))
 RADIMAGENET_LPIPS = MetricSpec("radimagenet_lpips", "lower_is_better",  True,  "rgb",  ModeSupport(_pyiqa_factory("radimagenet_lpips", backbone_path=str(RESNET50))), ModeUnsupported(REASON_DEEP_2D))
