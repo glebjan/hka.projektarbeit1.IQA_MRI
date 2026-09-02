@@ -43,7 +43,7 @@ from monai.metrics import (
     compute_surface_dice,
 )
 
-from metrics import MetricSpec
+from metrics import MetricSpec, ModeSupport
 
 DOMAIN_MEDICAL = "medical (MONAI)"
 
@@ -104,7 +104,7 @@ def dice_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricS
         direction="higher_is_better",
         reference=True,
         channels="gray",
-        factory=lambda: metric,
+        slice_mode=ModeSupport(lambda: metric),
         builtin=False,
         description=(
             "Dice similarity coefficient: overlap between predicted and "
@@ -152,7 +152,7 @@ def hausdorff95_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> 
         direction="lower_is_better",
         reference=True,
         channels="gray",
-        factory=lambda: metric,
+        slice_mode=ModeSupport(lambda: metric),
         builtin=False,
         description=(
             "95th-percentile Hausdorff Distance: how far the predicted "
@@ -203,7 +203,7 @@ def normalized_surface_dice_metric(*, threshold: Optional[float] = None, **monai
         direction="higher_is_better",
         reference=True,
         channels="gray",
-        factory=lambda: metric,
+        slice_mode=ModeSupport(lambda: metric),
         builtin=False,
         description=(
             "Normalized Surface Dice: fraction of the predicted and "
@@ -251,7 +251,7 @@ def average_surface_distance_metric(*, threshold: Optional[float] = None, **mona
         direction="lower_is_better",
         reference=True,
         channels="gray",
-        factory=lambda: metric,
+        slice_mode=ModeSupport(lambda: metric),
         builtin=False,
         description=(
             "Average Symmetric Surface Distance: mean distance between the "
@@ -330,7 +330,7 @@ def panoptic_quality_metric(*, threshold: Optional[float] = None, **monai_kwargs
         direction="higher_is_better",
         reference=True,
         channels="gray",
-        factory=lambda: metric,
+        slice_mode=ModeSupport(lambda: metric),
         builtin=False,
         description=(
             "Panoptic Quality: combines instance-detection accuracy (are the "

@@ -4,7 +4,7 @@ import pytest
 
 from image_loader import ImageLoader, LoadedImage
 from iqa_evaluator import IQAEvaluator, BATCH_SIZE
-from metrics import MetricRegistry, MetricSpec, PSNR, SSIM
+from metrics import MetricRegistry, MetricSpec, ModeSupport, PSNR, SSIM
 from records import ImageEvaluatorRecord
 
 
@@ -108,7 +108,7 @@ class TestComputeBatch:
             raise RuntimeError("simulated failure")
 
         spec = MetricSpec("bad", "higher_is_better", False, "gray",
-                          lambda: bad_metric, builtin=False)
+                          ModeSupport(lambda: bad_metric), builtin=False)
         reg = MetricRegistry()
         reg.register(spec)
 
@@ -125,7 +125,7 @@ class TestComputeBatch:
             return [0.5] * inp.shape[0]
 
         spec = MetricSpec("capture", "higher_is_better", True, "gray",
-                          lambda: capturing_metric, builtin=False)
+                          ModeSupport(lambda: capturing_metric), builtin=False)
         reg = MetricRegistry()
         reg.register(spec)
 
@@ -143,7 +143,7 @@ class TestComputeBatch:
             return [0.5] * inp.shape[0]
 
         spec = MetricSpec("capture_nr", "higher_is_better", False, "gray",
-                          lambda: capturing_metric, builtin=False)
+                          ModeSupport(lambda: capturing_metric), builtin=False)
         reg = MetricRegistry()
         reg.register(spec)
 

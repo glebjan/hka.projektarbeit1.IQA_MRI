@@ -6,6 +6,7 @@ from metrics import (
     DEVICE,
     MetricRegistry,
     MetricSpec,
+    ModeSupport,
     PyIQAMetric,
     _pyiqa_factory,
     BUILTIN_METRICS,
@@ -39,7 +40,7 @@ class TestDevice:
 class TestMetricRegistry:
     def test_register_and_specs(self, fake_metric):
         reg = MetricRegistry()
-        spec = MetricSpec("dummy", "higher_is_better", False, "gray", lambda: fake_metric, builtin=False)
+        spec = MetricSpec("dummy", "higher_is_better", False, "gray", ModeSupport(lambda: fake_metric), builtin=False)
         reg.register(spec)
         assert any(s.name == "dummy" for s in reg.specs)
 
@@ -49,7 +50,7 @@ class TestMetricRegistry:
         def factory():
             calls.append(1)
             return fake_metric
-        spec = MetricSpec("lazy", "higher_is_better", False, "gray", factory, builtin=False)
+        spec = MetricSpec("lazy", "higher_is_better", False, "gray", ModeSupport(factory), builtin=False)
         reg.register(spec)
         assert len(calls) == 0
         reg.get_metric("lazy")
@@ -60,7 +61,7 @@ class TestMetricRegistry:
 
     def test_get_metric_same_object_on_second_call(self, fake_metric):
         reg = MetricRegistry()
-        spec = MetricSpec("id_test", "higher_is_better", False, "gray", lambda: fake_metric, builtin=False)
+        spec = MetricSpec("id_test", "higher_is_better", False, "gray", ModeSupport(lambda: fake_metric), builtin=False)
         reg.register(spec)
         m1 = reg.get_metric("id_test")
         m2 = reg.get_metric("id_test")
@@ -68,19 +69,19 @@ class TestMetricRegistry:
 
     def test_re_register_clears_cache(self, fake_metric):
         reg = MetricRegistry()
-        spec1 = MetricSpec("dup", "higher_is_better", False, "gray", lambda: fake_metric, builtin=False)
+        spec1 = MetricSpec("dup", "higher_is_better", False, "gray", ModeSupport(lambda: fake_metric), builtin=False)
         reg.register(spec1)
         _ = reg.get_metric("dup")
-        assert "dup" in reg._cache
+        assert ("dup", "slice", None) in reg._cache
         # Re-register should evict cache
-        spec2 = MetricSpec("dup", "lower_is_better", False, "gray", lambda: fake_metric, builtin=False)
+        spec2 = MetricSpec("dup", "lower_is_better", False, "gray", ModeSupport(lambda: fake_metric), builtin=False)
         reg.register(spec2)
-        assert "dup" not in reg._cache
+        assert ("dup", "slice", None) not in reg._cache
 
     def test_direction_property(self, fake_metric):
         reg = MetricRegistry()
-        reg.register(MetricSpec("a", "higher_is_better", False, "gray", lambda: fake_metric))
-        reg.register(MetricSpec("b", "lower_is_better",  False, "gray", lambda: fake_metric))
+        reg.register(MetricSpec("a", "higher_is_better", False, "gray", ModeSupport(lambda: fake_metric)))
+        reg.register(MetricSpec("b", "lower_is_better",  False, "gray", ModeSupport(lambda: fake_metric)))
         d = reg.direction
         assert d["a"] == "higher_is_better"
         assert d["b"] == "lower_is_better"
@@ -338,14 +339,143 @@ class TestSegmentationMetrics:
 
 class TestMetricSpecDescriptionFields:
     def test_defaults_are_empty_strings(self):
-        spec = MetricSpec("dummy", "higher_is_better", False, "gray", lambda: None)
+        spec = MetricSpec("dummy", "higher_is_better", False, "gray", ModeSupport(lambda: None))
         assert spec.description == ""
         assert spec.domain == ""
 
     def test_accepts_explicit_values(self):
         spec = MetricSpec(
-            "dummy", "higher_is_better", False, "gray", lambda: None,
+            "dummy", "higher_is_better", False, "gray", ModeSupport(lambda: None),
             description="measures X", domain="medical (MONAI)",
         )
         assert spec.description == "measures X"
         assert spec.domain == "medical (MONAI)"
+
+
+# ---------------------------------------------------------------------------
+# Mode capability model
+# ---------------------------------------------------------------------------
+
+from metrics import (
+    ModeUnsupported,
+    SkippedMetric,
+    REASON_DEEP_2D,
+)
+
+
+def _spec(name, *, volume=False, reason="no volumetric implementation"):
+    """Build a throwaway spec whose metric returns one score per sample."""
+    def make(*_args):
+        def metric(inp, tgt=None):
+            return [float(inp[i].mean()) for i in range(inp.shape[0])]
+        return metric
+
+    return MetricSpec(
+        name=name,
+        direction="higher_is_better",
+        reference=False,
+        channels="gray",
+        slice_mode=ModeSupport(make),
+        volume_mode=ModeSupport(make) if volume else ModeUnsupported(reason),
+        builtin=False,
+    )
+
+
+class TestModeCapability:
+    def test_supported_mode_carries_a_factory(self):
+        spec = _spec("m", volume=True)
+        assert isinstance(spec.volume_mode, ModeSupport)
+
+    def test_unsupported_mode_carries_a_reason(self):
+        spec = _spec("m", reason="only reads flat pictures")
+        assert isinstance(spec.volume_mode, ModeUnsupported)
+        assert spec.volume_mode.reason == "only reads flat pictures"
+
+
+class TestRegistrySelect:
+    def test_partitions_specs_by_mode(self):
+        registry = MetricRegistry(_spec("can", volume=True), _spec("cannot"))
+        applicable, skipped = registry.select("volume")
+        assert [s.name for s in applicable] == ["can"]
+        assert skipped == [SkippedMetric("cannot", "no volumetric implementation")]
+
+    def test_slice_mode_keeps_everything(self):
+        registry = MetricRegistry(_spec("can", volume=True), _spec("cannot"))
+        applicable, skipped = registry.select("slice")
+        assert [s.name for s in applicable] == ["can", "cannot"]
+        assert skipped == []
+
+    def test_select_prints_nothing(self, capsys):
+        MetricRegistry(_spec("cannot")).select("volume")
+        assert capsys.readouterr().out == ""
+
+
+class TestGetMetricByMode:
+    def test_default_mode_is_slice(self):
+        registry = MetricRegistry(_spec("m", volume=True))
+        assert registry.get_metric("m") is registry.get_metric("m", "slice")
+
+    def test_volume_and_slice_instances_are_cached_separately(self):
+        registry = MetricRegistry(_spec("m", volume=True))
+        assert registry.get_metric("m", "volume") is not registry.get_metric("m", "slice")
+        assert registry.get_metric("m", "volume") is registry.get_metric("m", "volume")
+
+    def test_spacing_is_part_of_the_cache_key(self):
+        registry = MetricRegistry(_spec("m", volume=True))
+        a = registry.get_metric("m", "volume", (1.0, 1.0, 1.0))
+        b = registry.get_metric("m", "volume", (2.0, 1.0, 1.0))
+        assert a is not b
+        assert registry.get_metric("m", "volume", (1.0, 1.0, 1.0)) is a
+
+    def test_unsupported_mode_raises(self):
+        registry = MetricRegistry(_spec("m"))
+        with pytest.raises(ValueError, match="volume"):
+            registry.get_metric("m", "volume")
+
+
+class TestRegisterMetricVolume:
+    def test_defaults_to_slice_only(self, fake_metric):
+        registry = MetricRegistry()
+        registry.register_metric("f", fake_metric, direction="higher_is_better",
+                                 reference=False, channels="gray")
+        applicable, skipped = registry.select("volume")
+        assert applicable == []
+        assert [s.name for s in skipped] == ["f"]
+
+    def test_accepts_a_volume_factory(self, fake_metric):
+        registry = MetricRegistry()
+        registry.register_metric("f", fake_metric, direction="higher_is_better",
+                                 reference=False, channels="gray",
+                                 volume_factory=lambda spacing: fake_metric)
+        applicable, _ = registry.select("volume")
+        assert [s.name for s in applicable] == ["f"]
+
+
+class TestBuiltinCapabilities:
+    def test_eight_builtins_cannot_do_volume(self):
+        registry = MetricRegistry(*BUILTIN_METRICS)
+        _, skipped = registry.select("volume")
+        assert sorted(s.name for s in skipped) == sorted([
+            "lpips", "dists", "radimagenet_lpips", "clipiqa",
+            "clip_iqa_lung", "clip_iqa_brain", "brisque", "niqe",
+        ])
+
+    def test_all_share_the_same_reason(self):
+        registry = MetricRegistry(*BUILTIN_METRICS)
+        _, skipped = registry.select("volume")
+        assert {s.reason for s in skipped} == {REASON_DEEP_2D}
+
+    def test_no_builtin_is_skipped_in_slice_mode(self):
+        registry = MetricRegistry(*BUILTIN_METRICS)
+        _, skipped = registry.select("slice")
+        assert skipped == []
+
+
+class TestNotRankedDirection:
+    def test_direction_accepts_not_ranked(self):
+        spec = MetricSpec(
+            name="count", direction="not_ranked", reference=True, channels="gray",
+            slice_mode=ModeSupport(lambda *_: (lambda inp, tgt=None: [0.0])),
+            builtin=False,
+        )
+        assert MetricRegistry(spec).direction == {"count": "not_ranked"}

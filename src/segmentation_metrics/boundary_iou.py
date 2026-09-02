@@ -37,7 +37,7 @@ import numpy as np
 import torch
 from scipy.ndimage import distance_transform_cdt
 
-from metrics import MetricSpec
+from metrics import MetricSpec, ModeSupport
 from segmentation_metrics.volume import as_mask
 
 DEFAULT_DILATION_RATIO = 0.02
@@ -210,7 +210,7 @@ def boundary_iou_metric(
         direction="higher_is_better",
         reference=True,
         channels="gray",
-        factory=lambda: metric,
+        slice_mode=ModeSupport(lambda: metric),
         builtin=False,
         description=(
             "Boundary IoU: intersection-over-union computed on a thin band "

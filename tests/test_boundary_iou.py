@@ -250,13 +250,13 @@ class TestBoundaryIoUMetricBuilder:
         assert BOUNDARY_IOU.builtin is False
 
     def test_factory_produces_a_working_metric(self):
-        metric = BOUNDARY_IOU.factory()
+        metric = BOUNDARY_IOU.slice_mode.factory()
         mask = _square(160, 120)
         assert metric(_batch([mask]), _batch([mask]))[0] == pytest.approx(1.0)
 
     def test_builder_overrides_reach_the_metric(self):
         a, b = _square(160, 20), _square(160, 25)
-        metric = boundary_iou_metric(dilation_ratio=1.0).factory()
+        metric = boundary_iou_metric(dilation_ratio=1.0).slice_mode.factory()
         assert metric(_batch([a]), _batch([b]))[0] == pytest.approx(_mask_iou(a, b))
 
 

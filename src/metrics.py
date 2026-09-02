@@ -30,8 +30,45 @@ from constants import RESNET50
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-MetricDirection = Literal["higher_is_better", "lower_is_better"]
+MetricDirection = Literal["higher_is_better", "lower_is_better", "not_ranked"]
 MetricChannels  = Literal["gray", "rgb"]
+ScoringMode     = Literal["slice", "volume"]
+
+# Duplicated from image_loader.Spacing on purpose: metrics.py must not import
+# image_loader — this is only a structural type alias, not a dependency.
+Spacing = tuple[float, float, float]
+
+REASON_DEEP_2D = (
+    "compares images with a neural network trained on flat 2D pictures, so it "
+    "has no way to see a stack of slices as one 3D body"
+)
+REASON_NO_VOLUME_IMPL = "has no volumetric implementation"
+
+
+@dataclass(frozen=True)
+class ModeSupport:
+    """The metric can serve this mode; `factory` builds the instance.
+
+    For `slice_mode` the factory takes no argument. For `volume_mode` it takes
+    the image's voxel spacing (`Spacing` or None) — surface-distance metrics
+    need it, the others ignore it.
+    """
+    factory: Callable[..., "Metric"]
+
+
+@dataclass(frozen=True)
+class ModeUnsupported:
+    """The metric cannot serve this mode; `reason` is shown to the user verbatim."""
+    reason: str
+
+
+ModeCapability = ModeSupport | ModeUnsupported
+
+
+@dataclass(frozen=True)
+class SkippedMetric:
+    name:   str
+    reason: str
 
 
 @runtime_checkable
@@ -54,7 +91,12 @@ class MetricSpec:
         direction: whether a higher or lower score indicates better quality.
         reference: True for full-reference metrics (need a target image).
         channels:  "gray" -> use ImageLoader.tensor; "rgb" -> use ImageLoader.rgb_tensor.
-        factory:   builds the Metric instance (lazily, cached by MetricRegistry).
+        slice_mode:  ModeSupport (builds the per-slice Metric, lazily, cached by
+                     MetricRegistry) or ModeUnsupported (with a reason) for
+                     per-slice scoring.
+        volume_mode: same, for whole-volume scoring. Defaults to
+                     ModeUnsupported(REASON_NO_VOLUME_IMPL) — most metrics only
+                     implement slice mode.
         builtin:   True for framework-shipped metrics (dedicated record field);
                    False for user-registered metrics (stored in record.extra).
         description: human-readable explanation of what the metric measures,
@@ -66,7 +108,8 @@ class MetricSpec:
     direction: MetricDirection
     reference: bool
     channels:  MetricChannels
-    factory:   Callable[[], Metric]
+    slice_mode:  ModeCapability
+    volume_mode: ModeCapability = ModeUnsupported(REASON_NO_VOLUME_IMPL)
     builtin:      bool = True
     description:  str  = ""
     domain:       str  = ""
@@ -101,13 +144,14 @@ class MetricRegistry:
 
     def __init__(self, *specs: MetricSpec):
         self._specs: dict[str, MetricSpec] = {}
-        self._cache: dict[str, Metric] = {}
+        self._cache: dict[tuple[str, str, Optional[Spacing]], Metric] = {}
         self.register(*specs)
 
     def register(self, *specs: MetricSpec) -> None:
         for spec in specs:
             self._specs[spec.name] = spec
-            self._cache.pop(spec.name, None)
+            for key in [k for k in self._cache if k[0] == spec.name]:
+                del self._cache[key]
 
     def register_metric(
         self,
@@ -117,6 +161,8 @@ class MetricRegistry:
         direction: MetricDirection,
         reference: bool,
         channels: MetricChannels = "rgb",
+        volume_factory: Optional[Callable[[Optional[Spacing]], Metric]] = None,
+        volume_reason: str = REASON_NO_VOLUME_IMPL,
     ) -> None:
         """Hook a custom metric into this registry.
 
@@ -124,14 +170,62 @@ class MetricRegistry:
         required. `metric` just needs to implement the Metric protocol. Its
         scores show up as a column named `name` in the report (via
         ImageEvaluatorRecord.extra).
-        """
-        self.register(MetricSpec(name, direction, reference, channels,
-                                 factory=lambda: metric, builtin=False))
 
-    def get_metric(self, name: str) -> Metric:
-        if name not in self._cache:
-            self._cache[name] = self._specs[name].factory()
-        return self._cache[name]
+        `volume_factory` takes the image's voxel spacing and returns a Metric
+        that scores a whole `(1, C, D, H, W)` volume. Omit it for a slice-only
+        metric; `volume_reason` is then what the user is told when they ask for
+        volume mode.
+        """
+        self.register(MetricSpec(
+            name, direction, reference, channels,
+            slice_mode=ModeSupport(lambda: metric),
+            volume_mode=(ModeSupport(volume_factory) if volume_factory is not None
+                         else ModeUnsupported(volume_reason)),
+            builtin=False,
+        ))
+
+    def get_metric(
+        self,
+        name:    str,
+        mode:    ScoringMode = "slice",
+        spacing: Optional[Spacing] = None,
+    ) -> Metric:
+        """Build (or reuse) the metric instance for one name, mode and geometry.
+
+        The defaults keep the plain `get_metric(name)` call valid, which is what
+        IQAEvaluator uses.
+        """
+        key = (name, mode, spacing)
+        if key not in self._cache:
+            capability = self._capability(self._specs[name], mode)
+            if isinstance(capability, ModeUnsupported):
+                raise ValueError(
+                    f"metric '{name}' cannot be scored in {mode} mode: {capability.reason}"
+                )
+            self._cache[key] = (
+                capability.factory() if mode == "slice" else capability.factory(spacing)
+            )
+        return self._cache[key]
+
+    @staticmethod
+    def _capability(spec: MetricSpec, mode: ScoringMode) -> ModeCapability:
+        return spec.slice_mode if mode == "slice" else spec.volume_mode
+
+    def select(self, mode: ScoringMode) -> tuple[list[MetricSpec], list[SkippedMetric]]:
+        """Split the registered specs into those that can serve `mode` and those that cannot.
+
+        Pure query — it prints nothing and raises nothing. The caller decides how
+        to report the skipped metrics.
+        """
+        applicable: list[MetricSpec] = []
+        skipped:    list[SkippedMetric] = []
+        for spec in self._specs.values():
+            capability = self._capability(spec, mode)
+            if isinstance(capability, ModeSupport):
+                applicable.append(spec)
+            else:
+                skipped.append(SkippedMetric(spec.name, capability.reason))
+        return applicable, skipped
 
     @property
     def specs(self) -> list[MetricSpec]:
@@ -160,17 +254,21 @@ from segmentation_metrics.boundary_iou import BOUNDARY_IOU
 
 
 # Full-reference metrics (need a target image)
-PSNR              = MetricSpec("psnr",              "higher_is_better", True,  "gray", _pyiqa_factory("psnr"))
-SSIM              = MetricSpec("ssim",              "higher_is_better", True,  "gray", _pyiqa_factory("ssim"))
-LPIPS             = MetricSpec("lpips",             "lower_is_better",  True,  "rgb",  _pyiqa_factory("lpips"))
-DISTS             = MetricSpec("dists",             "lower_is_better",  True,  "rgb",  _pyiqa_factory("dists"))
-RADIMAGENET_LPIPS = MetricSpec("radimagenet_lpips", "lower_is_better",  True,  "rgb",  _pyiqa_factory("radimagenet_lpips", backbone_path=str(RESNET50)))
+PSNR = MetricSpec("psnr", "higher_is_better", True, "gray",
+                  ModeSupport(_pyiqa_factory("psnr")),
+                  ModeSupport(lambda spacing: PyIQAMetric("psnr")))
+SSIM = MetricSpec("ssim", "higher_is_better", True, "gray",
+                  ModeSupport(_pyiqa_factory("ssim")),
+                  ModeSupport(lambda spacing: PyIQAMetric("ssim")))
+LPIPS             = MetricSpec("lpips",             "lower_is_better",  True,  "rgb",  ModeSupport(_pyiqa_factory("lpips")),  ModeUnsupported(REASON_DEEP_2D))
+DISTS             = MetricSpec("dists",             "lower_is_better",  True,  "rgb",  ModeSupport(_pyiqa_factory("dists")),  ModeUnsupported(REASON_DEEP_2D))
+RADIMAGENET_LPIPS = MetricSpec("radimagenet_lpips", "lower_is_better",  True,  "rgb",  ModeSupport(_pyiqa_factory("radimagenet_lpips", backbone_path=str(RESNET50))), ModeUnsupported(REASON_DEEP_2D))
 # No-reference metrics
-CLIPIQA           = MetricSpec("clipiqa",           "higher_is_better", False, "rgb",  _pyiqa_factory("clipiqa"))
-CLIP_IQA_LUNG     = MetricSpec("clip_iqa_lung",     "higher_is_better", False, "rgb",  _pyiqa_factory("clip_iqa_lung"))
-CLIP_IQA_BRAIN    = MetricSpec("clip_iqa_brain",    "higher_is_better", False, "rgb",  _pyiqa_factory("clip_iqa_brain"))
-BRISQUE           = MetricSpec("brisque",           "lower_is_better",  False, "rgb",  _pyiqa_factory("brisque"))
-NIQE              = MetricSpec("niqe",              "lower_is_better",  False, "rgb",  _pyiqa_factory("niqe"))
+CLIPIQA           = MetricSpec("clipiqa",           "higher_is_better", False, "rgb",  ModeSupport(_pyiqa_factory("clipiqa")),        ModeUnsupported(REASON_DEEP_2D))
+CLIP_IQA_LUNG     = MetricSpec("clip_iqa_lung",     "higher_is_better", False, "rgb",  ModeSupport(_pyiqa_factory("clip_iqa_lung")),  ModeUnsupported(REASON_DEEP_2D))
+CLIP_IQA_BRAIN    = MetricSpec("clip_iqa_brain",    "higher_is_better", False, "rgb",  ModeSupport(_pyiqa_factory("clip_iqa_brain")), ModeUnsupported(REASON_DEEP_2D))
+BRISQUE           = MetricSpec("brisque",           "lower_is_better",  False, "rgb",  ModeSupport(_pyiqa_factory("brisque")),        ModeUnsupported(REASON_DEEP_2D))
+NIQE              = MetricSpec("niqe",              "lower_is_better",  False, "rgb",  ModeSupport(_pyiqa_factory("niqe")),           ModeUnsupported(REASON_DEEP_2D))
 
 # Convenience bundle for "just register everything" — not registered by default.
 BUILTIN_METRICS = (

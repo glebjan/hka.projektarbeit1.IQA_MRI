@@ -69,14 +69,14 @@ class TestDiceMetricBuilder:
 
     def test_factory_produces_working_metric(self):
         spec = dice_metric()
-        metric = spec.factory()
+        metric = spec.slice_mode.factory()
         pred, gt = _binary_batch(n=2)
         scores = metric(pred, gt)
         assert len(scores) == 2
 
     def test_user_kwargs_pass_through(self):
         spec = dice_metric(include_background=False)
-        metric = spec.factory()
+        metric = spec.slice_mode.factory()
         pred, gt = _binary_batch(n=2)
         scores = metric(pred, gt)
         assert len(scores) == 2
@@ -94,7 +94,7 @@ class TestHausdorff95MetricBuilder:
 
     def test_identical_masks_score_zero_distance(self):
         spec = hausdorff95_metric()
-        metric = spec.factory()
+        metric = spec.slice_mode.factory()
         pred, _ = _binary_batch(n=2)
         scores = metric(pred, pred.clone())
         assert all(s == pytest.approx(0.0) for s in scores)
@@ -115,14 +115,14 @@ class TestNormalizedSurfaceDiceMetricBuilder:
 
     def test_identical_masks_score_perfect(self):
         spec = normalized_surface_dice_metric()
-        metric = spec.factory()
+        metric = spec.slice_mode.factory()
         pred, _ = _binary_batch(n=2)
         scores = metric(pred, pred.clone())
         assert all(s == pytest.approx(1.0) for s in scores)
 
     def test_custom_class_thresholds_override(self):
         spec = normalized_surface_dice_metric(class_thresholds=[2.0])
-        metric = spec.factory()
+        metric = spec.slice_mode.factory()
         pred, gt = _binary_batch(n=1)
         scores = metric(pred, gt)
         assert len(scores) == 1
@@ -143,7 +143,7 @@ class TestAverageSurfaceDistanceMetricBuilder:
 
     def test_identical_masks_score_zero_distance(self):
         spec = average_surface_distance_metric()
-        metric = spec.factory()
+        metric = spec.slice_mode.factory()
         pred, _ = _binary_batch(n=2)
         scores = metric(pred, pred.clone())
         assert all(s == pytest.approx(0.0) for s in scores)
@@ -182,7 +182,7 @@ class TestPanopticQualityMetricBuilder:
 
     def test_factory_produces_working_metric(self):
         spec = panoptic_quality_metric()
-        metric = spec.factory()
+        metric = spec.slice_mode.factory()
         pred, gt = _binary_batch(n=2)
         scores = metric(pred, gt)
         assert len(scores) == 2
