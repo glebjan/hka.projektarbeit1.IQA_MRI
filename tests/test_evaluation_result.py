@@ -114,3 +114,97 @@ class TestGenerateReport:
         res = self._build_result_from_real_image(tmp_path)
         res.generate_report(tmp_path / "r.csv")
         assert not (tmp_path / "masks").exists()
+
+
+# ---------------------------------------------------------------------------
+# aggregate_volumes
+# ---------------------------------------------------------------------------
+
+from segmentation_metrics.volume_metrics import TP, V_GT, V_PRED, VS
+
+
+def _slice_record(image_id, idx, *, v_pred, v_gt, tp, hd95=None):
+    r = ImageEvaluatorRecord(image_id=f"{image_id}_s{idx:03d}", scoring="slice", slice_index=idx)
+    r.extra.update({"v_pred": v_pred, "v_gt": v_gt, "tp": tp})
+    if hd95 is not None:
+        r.extra["hausdorff95"] = hd95
+    return r
+
+
+def _result(records):
+    return EvaluationResult(
+        [_EvaluatedImage(input_path=Path("vol.nii.gz"), records=records)],
+        MetricRegistry(V_PRED, V_GT, TP, VS),
+    )
+
+
+class TestAggregateVolumes:
+    def test_one_row_per_volume(self):
+        records = [
+            _slice_record("vol", 0, v_pred=4, v_gt=4, tp=4),
+            _slice_record("vol", 1, v_pred=8, v_gt=4, tp=4),
+        ]
+        df = _result(records).aggregate_volumes()
+        assert list(df.index) == ["vol"]
+
+    def test_counts_are_summed(self):
+        records = [
+            _slice_record("vol", 0, v_pred=4, v_gt=4, tp=4),
+            _slice_record("vol", 1, v_pred=8, v_gt=4, tp=4),
+        ]
+        row = _result(records).aggregate_volumes().loc["vol"]
+        assert row["v_pred"] == 12.0
+        assert row["v_gt"] == 8.0
+        assert row["tp"] == 8.0
+
+    def test_dice_is_the_ratio_of_sums_not_the_mean_of_ratios(self):
+        records = [
+            _slice_record("vol", 0, v_pred=4, v_gt=4, tp=4),     # per-slice dice 1.0
+            _slice_record("vol", 1, v_pred=8, v_gt=4, tp=4),     # per-slice dice 2/3
+        ]
+        row = _result(records).aggregate_volumes().loc["vol"]
+        assert row["dice"] == pytest.approx(2 * 8 / 20)          # 0.8, not 0.8333
+        assert row["vs"] == pytest.approx(1 - 4 / 20)
+
+    def test_two_volumes_are_grouped_separately(self):
+        records = [
+            _slice_record("a", 0, v_pred=4, v_gt=4, tp=4),
+            _slice_record("b", 0, v_pred=2, v_gt=6, tp=2),
+        ]
+        df = _result(records).aggregate_volumes()
+        assert sorted(df.index) == ["a", "b"]
+
+    def test_model_prefix_is_kept_in_the_key(self):
+        records = [_slice_record("smore/vol", 0, v_pred=4, v_gt=4, tp=4)]
+        assert list(_result(records).aggregate_volumes().index) == ["smore/vol"]
+
+    def test_non_reconstructible_metrics_are_absent(self):
+        records = [
+            _slice_record("vol", 0, v_pred=4, v_gt=4, tp=4, hd95=2.0),
+            _slice_record("vol", 1, v_pred=8, v_gt=4, tp=4, hd95=9.0),
+        ]
+        df = _result(records).aggregate_volumes()
+        assert "hausdorff95" not in df.columns
+
+    def test_empty_masks_give_nan_ratios(self):
+        records = [_slice_record("vol", 0, v_pred=0, v_gt=0, tp=0)]
+        row = _result(records).aggregate_volumes().loc["vol"]
+        assert np.isnan(row["dice"]) and np.isnan(row["vs"])
+
+    def test_missing_counts_are_reported_clearly(self):
+        record = ImageEvaluatorRecord(image_id="vol_s000", scoring="slice", slice_index=0)
+        result = EvaluationResult(
+            [_EvaluatedImage(input_path=Path("vol.nii.gz"), records=[record])],
+            MetricRegistry(),
+        )
+        with pytest.raises(ValueError, match="v_pred"):
+            result.aggregate_volumes()
+
+    def test_refuses_a_volume_mode_result(self):
+        record = ImageEvaluatorRecord(image_id="vol", scoring="volume", slice_index=None)
+        result = EvaluationResult(
+            [_EvaluatedImage(input_path=Path("vol.nii.gz"), records=[record])],
+            MetricRegistry(),
+        )
+        with pytest.raises(ValueError, match="already"):
+            result.aggregate_volumes()
