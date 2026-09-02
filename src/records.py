@@ -6,10 +6,18 @@ from typing import Optional
 
 @dataclass
 class ImageEvaluatorRecord:
+    """ImageEvaluatorRecord — one row of results.
+
+    `scoring` says what the row covers: "slice" (one 2D slice, `slice_index` set)
+    or "volume" (one whole 3D volume, `slice_index` None). A run has exactly one
+    scoring mode, so a report holds exactly one kind of row.
+    """
+
     image_id:            str
     source_model:        Optional[str]   = None
     mode:                str             = "no_reference"
-    slice_index:         int             = 0
+    scoring:             str             = "slice"
+    slice_index:         Optional[int]   = 0
     is_empty:            bool            = False
     # Full-reference metrics (None when no target is available)
     psnr:                Optional[float] = None
