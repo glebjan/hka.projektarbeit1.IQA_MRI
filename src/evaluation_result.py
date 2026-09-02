@@ -63,10 +63,20 @@ class EvaluationResult:
         reconstructed from per-slice values at all and are deliberately left
         out rather than averaged — run again with mode="volume" for those.
 
+        A missing count (the metric raised on that slice, see `IQAEvaluator`)
+        is not the same as an empty slice (no voxels to count, `is_empty`
+        True). An empty slice's missing count is filled with 0 — it really
+        contributes nothing. Any other missing count leaves that volume's
+        totals, and therefore its `dice`/`vs`/`vs_signed`, as NaN rather than
+        silently treating the uncounted voxels as zero; a warning names the
+        affected volumes. One incomplete volume does not invalidate the rest
+        of the report, so this never raises for that reason.
+
         Returns:
             DataFrame indexed by volume id (the slice id without its `_sNNN`
             suffix) with columns v_pred, v_gt, tp, dice, vs, vs_signed. Ratio
-            columns are NaN where the denominator is 0.
+            columns are NaN where the denominator is 0, and every column is
+            NaN for a volume with an incomplete (non-empty-slice) count.
 
         Raises:
             ValueError: if the run was already scored per volume, or if the
@@ -89,9 +99,12 @@ class EvaluationResult:
                 "again: MetricRegistry(..., V_PRED, V_GT, TP)."
             )
 
-        counts = df[["image_id", "v_pred", "v_gt", "tp"]].copy()
+        counts = df[["image_id", "is_empty", "v_pred", "v_gt", "tp"]].copy()
+        for col in ("v_pred", "v_gt", "tp"):
+            fillable = counts["is_empty"] & counts[col].isna()
+            counts.loc[fillable, col] = 0.0
         counts["image_id"] = counts["image_id"].str.replace(_SLICE_SUFFIX, "", regex=True)
-        grouped = counts.groupby("image_id")[["v_pred", "v_gt", "tp"]].sum(min_count=1)
+        grouped = counts.groupby("image_id")[["v_pred", "v_gt", "tp"]].sum(skipna=False)
 
         v_pred_sum = grouped["v_pred"].astype(float)
         v_gt_sum   = grouped["v_gt"].astype(float)
@@ -103,6 +116,19 @@ class EvaluationResult:
                                         1.0 - (v_pred_sum - v_gt_sum).abs() / denom)
         grouped["vs_signed"] = np.where(denom == 0, np.nan,
                                         2.0 * (v_pred_sum - v_gt_sum) / denom)
+
+        incomplete = grouped.index[grouped[["v_pred", "v_gt", "tp"]].isna().any(axis=1)]
+        if len(incomplete) > 0:
+            print(
+                "Volume-level numbers are incomplete for "
+                f"{', '.join(incomplete)}: some of their slices have voxel "
+                "counts that were never computed, most likely because a "
+                "metric failed on them during the run. Their volume-level "
+                "numbers are left empty rather than computed from an "
+                "incomplete sum — check the run's output for the metric "
+                "failure."
+            )
+
         return grouped
 
     # ------------------------------------------------------------------

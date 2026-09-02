@@ -131,6 +131,20 @@ def _slice_record(image_id, idx, *, v_pred, v_gt, tp, hd95=None):
     return r
 
 
+def _empty_slice_record(image_id, idx):
+    """A slice with no voxels: is_empty True, no counts recorded at all."""
+    return ImageEvaluatorRecord(
+        image_id=f"{image_id}_s{idx:03d}", scoring="slice", slice_index=idx, is_empty=True
+    )
+
+
+def _uncounted_slice_record(image_id, idx):
+    """A real, non-empty slice whose voxel-count metric failed to produce a value."""
+    return ImageEvaluatorRecord(
+        image_id=f"{image_id}_s{idx:03d}", scoring="slice", slice_index=idx, is_empty=False
+    )
+
+
 def _result(records):
     return EvaluationResult(
         [_EvaluatedImage(input_path=Path("vol.nii.gz"), records=records)],
@@ -208,3 +222,52 @@ class TestAggregateVolumes:
         )
         with pytest.raises(ValueError, match="already"):
             result.aggregate_volumes()
+
+    def test_empty_slice_contributes_zero_to_the_totals(self):
+        # An empty slice (no voxels) has no counts in `extra` at all; that is
+        # a correct zero, not a gap, and must not poison the volume.
+        records = [
+            _empty_slice_record("vol", 0),
+            _slice_record("vol", 1, v_pred=8, v_gt=4, tp=4),
+        ]
+        row = _result(records).aggregate_volumes().loc["vol"]
+        assert row["v_pred"] == 8.0
+        assert row["v_gt"] == 4.0
+        assert row["tp"] == 4.0
+        assert not np.isnan(row["dice"])
+        assert not np.isnan(row["vs"])
+
+    def test_uncounted_non_empty_slice_leaves_the_volume_nan(self):
+        # A non-empty slice with no counts means the metric failed on it —
+        # the total must not silently treat those missing voxels as zero.
+        records = [
+            _uncounted_slice_record("vol", 0),
+            _slice_record("vol", 1, v_pred=8, v_gt=4, tp=4),
+        ]
+        row = _result(records).aggregate_volumes().loc["vol"]
+        assert np.isnan(row["v_pred"])
+        assert np.isnan(row["v_gt"])
+        assert np.isnan(row["tp"])
+        assert np.isnan(row["dice"])
+        assert np.isnan(row["vs"])
+        assert np.isnan(row["vs_signed"])
+
+    def test_one_incomplete_volume_does_not_poison_another(self):
+        records = [
+            _uncounted_slice_record("bad", 0),
+            _slice_record("bad", 1, v_pred=8, v_gt=4, tp=4),
+            _slice_record("good", 0, v_pred=4, v_gt=4, tp=4),
+        ]
+        df = _result(records).aggregate_volumes()
+        bad, good = df.loc["bad"], df.loc["good"]
+        assert np.isnan(bad["dice"])
+        assert good["v_pred"] == 4.0
+        assert good["dice"] == pytest.approx(1.0)
+
+    def test_incomplete_volumes_are_warned_about_by_name(self, capsys):
+        records = [
+            _uncounted_slice_record("bad", 0),
+            _slice_record("bad", 1, v_pred=8, v_gt=4, tp=4),
+        ]
+        _result(records).aggregate_volumes()
+        assert "bad" in capsys.readouterr().out
