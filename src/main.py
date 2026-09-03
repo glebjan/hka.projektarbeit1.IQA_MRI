@@ -53,14 +53,28 @@ def evaluate(
         input_path:  Path to an input image file or a directory of images.
         target_path: Optional path to a reference image file or directory.
                      Pass None for a no-reference (NR-only) evaluation.
-        registry:    The metrics to compute. One instance is shared across
-                     every image in the run, so network-backed metrics are
-                     built once rather than once per image.
+        registry:    The metrics to compute. The metrics that can serve `mode`
+                     are collected into one registry shared by every image in
+                     the run, so network-backed metrics are built once rather
+                     than once per image. In volume mode that promise narrows
+                     to "once per voxel size": the surface-distance metrics are
+                     built per image geometry, so a dataset mixing resolutions
+                     builds one instance per distinct voxel size. Harmless in
+                     practice — those are weightless MONAI functionals, and one
+                     dataset is usually on one grid.
         mode:        "slice" scores every 2D slice separately and produces one
                      row per slice; "volume" scores each 3D stack once and
                      produces one row per volume. Metrics that cannot serve the
                      chosen mode are skipped with a message; if none can, this
-                     raises.
+                     raises. The two modes are not a shared scale: `psnr`,
+                     `ssim` and `boundary_iou` come from a different estimator
+                     in each mode, and `hausdorff95`, `nsd` and `assd` are
+                     counted in voxels in slice mode but in millimetres in
+                     volume mode, because the volume path passes the image's
+                     voxel size. For `nsd` that also moves the tolerance: its
+                     default `class_thresholds` of 1.0 means one voxel in slice
+                     mode and one millimetre in volume mode. Compare a column
+                     only against other runs in the same mode.
 
     No files are written; use EvaluationResult.generate_report() for output.
     """
@@ -74,9 +88,17 @@ def evaluate(
         )
     report_skipped_metrics(skipped, mode)
 
+    # The evaluators run against the metrics that were announced, not the ones
+    # the caller handed in: a skipped metric must actually be absent, or the
+    # slice evaluator would ask for an instance that cannot be built and lose
+    # the whole image. One instance, shared by every image in the run.
+    run_registry = MetricRegistry(*applicable)
+
     evaluated: list[_EvaluatedImage] = []
+    non_volumetric = 0
 
     def _run_one(inp: Path, tgt: Optional[Path]) -> None:
+        nonlocal non_volumetric
         try:
             input_loader = ImageLoader(inp)
             input_loader.log_tensor_shape()
@@ -91,9 +113,10 @@ def evaluate(
                     "PNG and JPEG images, for a single slice, and for 4D scans "
                     "whose frames are time steps."
                 )
+                non_volumetric += 1
                 return
             records = build_evaluator(
-                input_loader, target_loader, registry, mode
+                input_loader, target_loader, run_registry, mode
             ).run_evaluation()
             evaluated.append(_EvaluatedImage(input_path=inp, records=records))
         except Exception as exc:
@@ -130,7 +153,14 @@ def evaluate(
     else:
         print(f"No input file or directory at {input_path}")
 
-    return EvaluationResult(evaluated, registry)
+    if non_volumetric:
+        print(
+            f"\n{non_volumetric} file(s) were skipped: their slices are not "
+            "stacked along a spatial axis, so there is no 3D body to score. "
+            'Run again with mode="slice" to score them one slice at a time.'
+        )
+
+    return EvaluationResult(evaluated, run_registry)
 
 
 # ---------------------------------------------------------------------------

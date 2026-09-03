@@ -70,7 +70,7 @@ def _volume_factory(
                 kwargs.setdefault("spacing", list(spacing))
             elif "spacing" not in kwargs:
                 print(
-                    "[warning] no voxel size available, so this distance is "
+                    "[WARNING] no voxel size available, so this distance is "
                     "counted in voxels rather than millimetres. Values are "
                     "comparable between images on the same grid, but not "
                     "between images recorded at different resolutions."
@@ -215,11 +215,19 @@ def normalized_surface_dice_metric(*, threshold: Optional[float] = None, **monai
     """Normalized Surface Dice (NSD): fraction of the predicted/gt boundary within a tolerance distance.
 
     Domain: medical (MONAI). `class_thresholds` is the tolerance distance per
-    class (defaults to `[1.0]`, one voxel) — MONAI requires it and treats it
-    in the same units as `spacing`. For another domain, set both
-    `class_thresholds` (acceptable boundary error) and `spacing` (physical
-    voxel size) to that domain's units and tolerance, and extend
-    `class_thresholds` to one entry per class if using multi-class masks.
+    class (defaults to `[1.0]`) — MONAI requires it and treats it in the same
+    units as `spacing`. For another domain, set both `class_thresholds`
+    (acceptable boundary error) and `spacing` (physical voxel size) to that
+    domain's units and tolerance, and extend `class_thresholds` to one entry
+    per class if using multi-class masks.
+
+    The scoring mode therefore changes what this metric measures, not just its
+    scale. Slice mode passes no spacing, so the default tolerance means one
+    voxel; volume mode passes the image's voxel size, so the same default means
+    one millimetre. On 0.5 mm data volume mode is twice as forgiving as slice
+    mode, and on 2 mm data half as forgiving. Pass `class_thresholds`
+    explicitly if the two modes have to be read on one scale, and do not
+    compare an `nsd` column from a slice run against one from a volume run.
 
     Args:
         threshold: binarize cutoff for soft/probability pred+gt inputs

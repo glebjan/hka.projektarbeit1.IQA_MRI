@@ -166,7 +166,7 @@ class TestEvaluateRegistryThreading:
         with pytest.raises(TypeError):
             main_module.evaluate(inp)
 
-    def test_same_registry_instance_shared_across_images(self, tmp_path, monkeypatch):
+    def test_one_registry_instance_shared_across_images(self, tmp_path, monkeypatch):
         seen = []
         real_init = IQAEvaluator.__init__
 
@@ -182,7 +182,12 @@ class TestEvaluateRegistryThreading:
         main_module.evaluate(tmp_path, registry=reg)
 
         assert len(seen) == 2, "expected one evaluator per image"
-        assert all(r is reg for r in seen), "every image must share one registry instance"
+        # evaluate() runs against a registry holding only the metrics that can
+        # serve the mode, so this is not necessarily the caller's instance —
+        # but it must be one instance for the whole run, so a network-backed
+        # metric is still built once rather than once per image.
+        assert len({id(r) for r in seen}) == 1, "every image must share one registry instance"
+        assert {s.name for s in seen[0].specs} == {s.name for s in reg.specs}
 
     def test_two_runs_use_different_metrics(self, tmp_path):
         inp = _make_png(tmp_path / "inp.png", seed=0)
@@ -286,3 +291,57 @@ class TestEvaluateMode:
         result = evaluate(directory, None, registry=registry, mode="volume")
         assert len(result.to_frame()) == 1
         assert "flat.png" in capsys.readouterr().out
+
+    def test_non_volumetric_skips_are_counted_at_the_end(self, tmp_path, nifti_volume, synthetic_png, capsys):
+        import shutil
+
+        directory = tmp_path / "mixed"
+        directory.mkdir()
+        shutil.copy(nifti_volume, directory / "vol.nii.gz")
+        shutil.copy(synthetic_png, directory / "flat.png")
+        shutil.copy(synthetic_png, directory / "flat2.png")
+        evaluate(directory, None, registry=MetricRegistry(_spec("m", volume=True)), mode="volume")
+        out = capsys.readouterr().out
+        assert "2 file(s) were skipped" in out
+        assert 'mode="slice"' in out
+
+    def test_no_skip_summary_when_every_file_is_volumetric(self, nifti_volume, capsys):
+        evaluate(nifti_volume, None,
+                 registry=MetricRegistry(_spec("m", volume=True)), mode="volume")
+        assert "file(s) were skipped" not in capsys.readouterr().out
+
+
+def _volume_only_spec(name, reason="needs the whole stack to mean anything"):
+    def make(*_args):
+        return lambda inp, tgt=None: [float(inp[i].mean()) for i in range(inp.shape[0])]
+
+    return MetricSpec(
+        name=name, direction="higher_is_better", reference=False, channels="gray",
+        slice_mode=ModeUnsupported(reason),
+        volume_mode=ModeSupport(make),
+        builtin=False,
+    )
+
+
+class TestSkippedMetricsAreActuallySkipped:
+    def test_slice_run_survives_a_volume_only_metric(self, nifti_volume, capsys):
+        # The skip that was announced must be the skip that happens: the slice
+        # evaluator cannot filter the registry itself, so evaluate() has to hand
+        # it one that no longer contains the volume-only metric. Otherwise the
+        # lookup raises and the whole image is dropped.
+        registry = MetricRegistry(_spec("works", volume=True), _volume_only_spec("volonly"))
+        result = evaluate(nifti_volume, None, registry=registry, mode="slice")
+        df = result.to_frame()
+        out = capsys.readouterr().out
+
+        assert "volonly" in out, "the skip must still be announced"
+        assert len(df) == 6, "the working metric's rows must survive"
+        assert df["works"].notna().any()
+        assert "volonly" not in df.columns
+
+    def test_volume_run_survives_a_slice_only_metric(self, nifti_volume):
+        registry = MetricRegistry(_spec("works", volume=True), _spec("flat", volume=False))
+        df = evaluate(nifti_volume, None, registry=registry, mode="volume").to_frame()
+        assert len(df) == 1
+        assert df.iloc[0]["works"] is not None
+        assert "flat" not in df.columns

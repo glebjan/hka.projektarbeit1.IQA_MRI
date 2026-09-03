@@ -20,10 +20,13 @@ class LoadedImage:
 
     Attributes:
         tensor:        (D, 1, H, W) float32 in [0, 1].
-        spacing:       physical voxel size as (dz, dy, dx) in millimetres,
-                       ordered to match the tensor's axes. None when the format
-                       carries no geometry (PNG/JPEG) or when the depth axis is
-                       not spatial.
+        spacing:       physical voxel size in millimetres, ordered to match the
+                       tensor's axes: (d_depth, d_height, d_width) for the
+                       tensor's (D, 1, H, W). The names are tensor axes, not
+                       anatomical ones — for a NIfTI transposed to (Z, X, Y),
+                       for instance, the tuple is anatomically (dz, dx, dy).
+                       None when the format carries no geometry (PNG/JPEG) or
+                       when the depth axis is not spatial.
         is_volumetric: True only when the depth axis is a real spatial axis with
                        more than one slice. False for 2D formats, for a single
                        slice, and for 4D NIfTI (whose depth axis mixes time and

@@ -13,9 +13,15 @@ Two deliberate differences from the slice path:
 - Metrics are built per image geometry, because HD95, ASSD, NSD and Boundary IoU
   need the voxel spacing to return physical distances.
 
-`_compute_batch` is overridden rather than inherited: the inherited version calls
-`registry.get_metric(name)`, which resolves to slice mode, and IQAEvaluator is
-frozen by requirement.
+None of IQAEvaluator's computation is reused. `run_evaluation` is replaced
+outright, and the work it calls — `_compute_volume`, `_pick_volume` — is defined
+here beside the inherited `_compute_batch` and `_pick_tensor_batch` rather than
+overriding them: the inherited pair asks the registry for the slice-mode
+instance and indexes a 4D batch, both wrong for a whole volume. What is actually
+inherited is `__init__`: the loaders, the registry, the source model and the
+input/target shape check. Subclassing for that alone is a compromise, and it is
+only safe because IQAEvaluator is frozen by requirement — it cannot be edited to
+take a mode.
 """
 
 from typing import Optional

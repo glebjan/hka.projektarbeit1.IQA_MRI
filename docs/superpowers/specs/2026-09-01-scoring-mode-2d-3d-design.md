@@ -176,6 +176,18 @@ estimators in the two modes (pyiqa vs MONAI; chessboard vs euclidean band). A
 column of the same name from a slice run and from a volume run is not directly
 comparable. Documented once, centrally, rather than three times.
 
+The same warning covers `hausdorff95`, `nsd` and `assd`, for a different reason:
+the volume factory passes the image's voxel spacing, so their values are
+millimetres in volume mode and voxel counts in slice mode, under one column name.
+For `nsd` the unit change also moves the measurement itself — MONAI reads
+`class_thresholds` in the units of `spacing`, so the default of `1.0` is a
+tolerance of one voxel in slice mode and one millimetre in volume mode. On 0.5 mm
+data that is twice as forgiving, in a metric whose whole output is the fraction
+of boundary within tolerance. Rescaling the default was considered and rejected:
+changing a metric's default tolerance is a project-owner decision, not a
+documentation fix. A user who wants the two modes to agree passes
+`class_thresholds` explicitly.
+
 `v_pred`, `v_gt` and `tp` are raw voxel counts, not quality measures, so
 `MetricDirection` widens to
 `Literal["higher_is_better", "lower_is_better", "not_ranked"]`. This is a
@@ -470,13 +482,19 @@ Two independent paths, one number.
 
 ## Known compromises
 
-1. `psnr`, `ssim` and `boundary_iou` use different estimators per mode. Values
-   are not comparable across modes.
+1. `psnr`, `ssim` and `boundary_iou` use different estimators per mode, and
+   `hausdorff95`, `nsd` and `assd` are counted in voxels in slice mode but in
+   millimetres in volume mode — which for `nsd` also redefines the default
+   tolerance. Values are not comparable across modes.
 2. `MetricDirection` gains `not_ranked` to accommodate raw voxel counts.
-3. `VolumeEvaluator` depends on two private methods of `IQAEvaluator`
-   (`_compute_batch`, `_pick_tensor_batch`). Acceptable only because that class
-   is frozen; were it in motion, a sibling class with duplicated logic would be
-   the safer trade.
+3. `VolumeEvaluator` subclasses `IQAEvaluator` but reuses none of its
+   computation: it overrides `run_evaluation` wholesale and adds its own
+   `_compute_volume` and `_pick_volume` beside — never calling `_compute_batch`
+   or `_pick_tensor_batch`, whose registry lookup and 4D slicing are both wrong
+   for a volume. What it does inherit is `__init__`'s state and shape check.
+   Subclassing for that alone is the compromise: it is only safe because
+   `IQAEvaluator` is frozen, and were that class in motion a sibling class
+   would be the safer trade.
 4. `MetricRegistry`'s "built once per run" promise becomes "once per spacing
    value". Harmless in practice — volumetric metrics are weightless MONAI
    functionals, and spacing is usually constant within a dataset — but

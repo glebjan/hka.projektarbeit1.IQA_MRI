@@ -41,7 +41,11 @@ class MonaiSSIMMetric:
     The window is built at call time, because it cannot be larger than the volume
     it slides through: MRI stacks are routinely thinner than 11 slices, and
     MONAI's default window of 11 would fail on them. The window is shrunk to the
-    largest odd size that fits every spatial axis, never grown beyond `win_size`.
+    largest odd size that fits every spatial axis, never grown beyond `win_size`
+    — but never below 3 either, since a smaller window measures no structure at
+    all. A volume thinner than 3 slices therefore keeps a window that does not
+    fit it, MONAI rejects the call, and `VolumeEvaluator` records no score for
+    that volume. Score such a stack with mode="slice" instead.
 
     Args:
         spatial_dims: 3 for volumes. Kept configurable because MONAI supports 2

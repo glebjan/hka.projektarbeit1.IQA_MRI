@@ -271,14 +271,29 @@ def boundary_iou_metric(
             (`value >= threshold` -> True).
     """
     metric = BoundaryIoUMetric(dilation_ratio=dilation_ratio, threshold=threshold)
+
+    def build_volume_metric(spacing: Optional[tuple[float, ...]]) -> BoundaryIoUMetric:
+        if spacing is None:
+            print(
+                "[WARNING] no voxel size available, so the boundary band is "
+                "measured in voxels rather than physical units. A band of the "
+                "same voxel width is physically thicker along a coarse axis, "
+                "so through-plane boundary errors are judged more leniently "
+                "than in-plane ones. Scores stay comparable between images on "
+                "the same grid. To get an evenly thick band, use a format that "
+                "records the voxel size (NIfTI, NRRD, MHA or DICOM)."
+            )
+        return BoundaryIoUMetric(
+            dilation_ratio=dilation_ratio, threshold=threshold, spacing=spacing
+        )
+
     return MetricSpec(
         name="boundary_iou",
         direction="higher_is_better",
         reference=True,
         channels="gray",
         slice_mode=ModeSupport(lambda: metric),
-        volume_mode=ModeSupport(lambda spacing: BoundaryIoUMetric(
-            dilation_ratio=dilation_ratio, threshold=threshold, spacing=spacing)),
+        volume_mode=ModeSupport(build_volume_metric),
         builtin=False,
         description=(
             "Boundary IoU: intersection-over-union computed on a thin band "

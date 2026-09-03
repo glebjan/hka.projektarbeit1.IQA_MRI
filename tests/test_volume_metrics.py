@@ -64,11 +64,16 @@ class TestVolumeMode:
         # totals: pred 12, gt 8  ->  1 - 4/20
         assert metric(pred, gt)[0] == pytest.approx(1.0 - 4 / 20)
 
-    def test_vs_is_spacing_invariant(self):
-        pred, gt = _pair_5d()
-        fine = MetricRegistry(VS).get_metric("vs", "volume", (1.0, 1.0, 1.0))
-        coarse = MetricRegistry(VS).get_metric("vs", "volume", (3.0, 1.0, 1.0))
-        assert fine(pred, gt)[0] == pytest.approx(coarse(pred, gt)[0])
+    def test_the_volume_factory_hands_back_one_instance_for_every_spacing(self):
+        # VS counts voxels and takes no spacing argument, so its volume factory
+        # ignores the one it is handed. This asserts that design directly: the
+        # registry may key its cache on spacing, but the object behind every key
+        # is the same one. (An invariance assertion would be vacuous here —
+        # comparing one instance's output to its own.)
+        registry = MetricRegistry(VS)
+        fine = registry.get_metric("vs", "volume", (1.0, 1.0, 1.0))
+        coarse = registry.get_metric("vs", "volume", (3.0, 1.0, 1.0))
+        assert fine is coarse
 
     def test_vs_signed_is_positive_when_oversegmenting(self):
         metric = MetricRegistry(VS_SIGNED).get_metric("vs_signed", "volume", None)
@@ -101,10 +106,16 @@ class TestCrossCheck:
         from segmentation_metrics.monai_metrics import DICE
         from segmentation_metrics.volume_metrics import TP, V_GT, V_PRED
 
+        # Every slice carries foreground on purpose. A blank prediction slice
+        # makes aggregate_volumes() return NaN by design — a per-slice run
+        # never counts the reference's voxels there, so the volume total is
+        # genuinely unknown. That guard has its own coverage in
+        # test_evaluation_result.py; here it would only mask the comparison
+        # this test exists to make.
         gt = np.zeros((12, 12, 6), dtype="float32")
-        gt[3:9, 3:9, 1:5] = 1.0
+        gt[3:9, 3:9, :] = 1.0
         pred = np.zeros_like(gt)
-        pred[4:10, 3:9, 1:5] = 1.0
+        pred[4:10, 3:9, :] = 1.0
         affine = np.diag([1.0, 1.0, 1.0, 1.0])
         gt_path = tmp_path / "case_gt.nii.gz"
         pred_path = tmp_path / "case_pred.nii.gz"

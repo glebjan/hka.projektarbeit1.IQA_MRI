@@ -412,3 +412,13 @@ class TestBoundaryIoUVolumeMode:
         gt = torch.from_numpy(_cube().astype("float32")).unsqueeze(0).unsqueeze(0)
         metric = MetricRegistry(BOUNDARY_IOU).get_metric("boundary_iou", "volume", None)
         assert metric(gt, gt)[0] == pytest.approx(1.0)
+
+    def test_the_fallback_says_so(self, capsys):
+        MetricRegistry(BOUNDARY_IOU).get_metric("boundary_iou", "volume", None)
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert "voxels" in out
+
+    def test_no_warning_when_spacing_is_known(self, capsys):
+        MetricRegistry(BOUNDARY_IOU).get_metric("boundary_iou", "volume", (1.0, 1.0, 1.0))
+        assert capsys.readouterr().out == ""
