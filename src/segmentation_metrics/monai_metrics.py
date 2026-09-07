@@ -7,6 +7,12 @@ binary/label mask tensors, e.g. images loaded via `ImageLoader` from mask
 files the user already produced with their own segmentation pipeline; this
 module performs no segmentation itself.
 
+TODO(norm-6): that route is currently lossy. ImageLoader min-max-normalizes
+every file it decodes, so a multi-label mask reaches these metrics as floats
+and is binarized at 0.5 — {0,1,2,3} becomes [0,.333,.667,1], dropping label 1
+into the background and merging labels 2 and 3. A fully-filled mask degenerates
+further (see TODO(norm-7) in image_loader.py). Fix: load masks unnormalized.
+
 MONAI's defaults are calibrated for the medical-imaging domain (physical
 voxel spacing in millimeters, a background-class convention). Each builder
 function's MetricSpec.description below states which parameters must be

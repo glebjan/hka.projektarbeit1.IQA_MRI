@@ -41,6 +41,42 @@ class LoadedImage:
 # Format-specific loaders
 # ---------------------------------------------------------------------------
 
+# TODO(norm-1): min-max is invariant under any affine transform, so
+#   norm(x) == norm(2*x + 500). Input and target are normalized independently,
+#   which erases every systematic brightness/contrast error between them: psnr,
+#   ssim, lpips and dists cannot penalise a generator whose output is uniformly
+#   too bright. Fix: for full-reference runs normalize both images on ONE scale
+#   (the target's), and add a metric that measures intensity fidelity explicitly
+#   so the error becomes visible instead of vanishing.
+# TODO(norm-2): min/max are rank-1/rank-n order statistics — the least robust
+#   estimators available. A single spike voxel (metal, reconstruction artefact,
+#   dead pixel) compresses everything else into a fraction of the range:
+#   [100,110,120,130,140] -> [0,.25,.5,.75,1], but with one value at 4000 ->
+#   [1,0,.0026,.0051,.0077]. Fix: clip at the 0.5/99.5 percentiles before
+#   scaling, the standard choice in medical imaging.
+# TODO(norm-5): after normalization "1.0" means a different physical quantity in
+#   every image (4095 raw units here, 800 there). psnr is defined against a
+#   data_range that is always taken as 1.0, so averaging the psnr column over a
+#   dataset averages over incommensurable scales. Fix: keep the raw (lo, hi) on
+#   LoadedImage and write it into the report so comparability stays decidable.
+# TODO(norm-6): masks go through this same function. A label map {0,1,2,3}
+#   becomes [0,.333,.667,1] and a 0.5 cutoff drops label 1 into the background
+#   while merging labels 2 and 3 — see the matching TODO in
+#   segmentation_metrics/volume.py. Fix: give ImageLoader a normalize=False /
+#   is_mask path that preserves the integer dtype.
+# TODO(norm-7): the hi == lo branch maps a constant image to zeros, so [1,1,1,1]
+#   becomes [0,0,0,0]: a fully-filled mask silently turns into an empty one
+#   (v_pred = 0, dice = 0, no error). Fix: preserve the constant value (clipped
+#   to [0,1]) and report the case instead of swallowing it.
+# TODO(norm-8): the +1e-8 makes the output range [0, (hi-lo)/(hi-lo+1e-8)]
+#   rather than exactly [0,1] — norm([0, 1e-8]) yields [0.0, 0.5]. The invariant
+#   Metric and as_mask rely on therefore only holds approximately. Fix: drop the
+#   epsilon; the `hi > lo` guard already rules out division by zero.
+# TODO(norm-10): normalization is hard-wired into the decoder and the Metric
+#   protocol fixes "float32 in [0,1]" as its contract, so a metric that WANTS to
+#   measure intensity fidelity cannot exist. Fix: inject normalization as a
+#   strategy, the same move this branch already made for `spacing` — do not
+#   discard information in the decoder, pass it on and let the consumer decide.
 def _to_normalized_channel_tensor(depth_first_array: np.ndarray) -> torch.Tensor:
     arr = depth_first_array.astype(np.float32)
     lo, hi = float(arr.min()), float(arr.max())
@@ -75,6 +111,12 @@ def _load_dicom(path: Path) -> LoadedImage:
     pixel_array = _dicom_array_to_depth_first(
         dicom_dataset.pixel_array, photometric
     ).astype(np.float32)
+    # TODO(norm-9): slope/intercept are applied correctly here and then made
+    #   irrelevant again by the min-max normalization downstream. WindowCenter /
+    #   WindowWidth — the display scale the radiologist intended, and the obvious
+    #   alternative to min/max — are never read at all. Fix: offer windowing as a
+    #   normalization strategy (DICOM window when present, a fixed HU window for
+    #   CT, percentile/z-score for MR).
     slope = float(getattr(dicom_dataset, "RescaleSlope", 1.0) or 1.0)
     intercept = float(getattr(dicom_dataset, "RescaleIntercept", 0.0) or 0.0)
     pixel_array = pixel_array * slope + intercept
@@ -234,6 +276,14 @@ class ImageLoader:
 
     @property
     def empty_slice_mask(self) -> torch.Tensor:
+        # TODO(norm-3): these fixed thresholds are applied to the NORMALIZED
+        #   tensor, and iqa_evaluator.py drops the slices they flag. Combined
+        #   with the outlier sensitivity of TODO(norm-2) this cascades: a spike
+        #   compressing the volume by ~1000x pushes the std of perfectly normal
+        #   slices from ~0.2 to ~0.0002, so one corrupt voxel can mark a whole
+        #   volume as empty and remove it from the evaluation without a word.
+        #   Fix: test emptiness on the raw data before normalization, or relative
+        #   to the image's own range instead of against an absolute constant.
         volume = self.tensor.squeeze(1)
         return (volume.mean(dim=(1, 2)) < 1e-3) | (volume.std(dim=(1, 2)) < 1e-3)
 

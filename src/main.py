@@ -76,6 +76,19 @@ def evaluate(
                      mode and one millimetre in volume mode. Compare a column
                      only against other runs in the same mode.
 
+                     TODO(norm-4/norm-5): the same caveat applies to the
+                     intensity scale and is not yet stated anywhere the user
+                     sees. ImageLoader normalizes over the whole stack, so a
+                     slice's score depends on the rest of the volume (edge
+                     slices occupy a narrow part of [0,1] and read as poor
+                     quality to brisque/niqe/clipiqa), and slice rows are not
+                     the independent samples the report's boxplot and
+                     describe() treat them as. Across images, "1.0" denotes a
+                     different physical range each time, so averaging psnr over
+                     a dataset averages over incommensurable scales. Fix: make
+                     the normalization scope configurable, record it and the
+                     raw data range per row.
+
     No files are written; use EvaluationResult.generate_report() for output.
     """
     applicable, skipped = registry.select(mode)

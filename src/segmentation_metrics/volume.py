@@ -29,6 +29,13 @@ def as_mask(x: np.ndarray, label: int = 1, threshold: float = 0.5) -> np.ndarray
                 "before binarizing?"
             )
         return x >= threshold
+    # TODO(norm-6): this branch is unreachable for anything loaded through
+    #   ImageLoader, which always emits float32 — so `label` is effectively dead
+    #   for the mask files monai_metrics.py documents as its input, and a label
+    #   map {0,1,2,3} arrives here pre-scaled to [0,.333,.667,1] where the 0.5
+    #   cutoff drops label 1 and merges labels 2 and 3. Fix: preserve the integer
+    #   dtype in the loader (see TODO(norm-6) in image_loader.py); the one-vs-rest
+    #   logic below is already correct and would then apply again.
     if np.issubdtype(x.dtype, np.integer):
         return x == label
     raise TypeError(f"as_mask does not support dtype {x.dtype}")
