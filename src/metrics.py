@@ -7,6 +7,34 @@ writing a new adapter class; IQAEvaluator is untouched.
 
 To add a custom metric without touching main.py or pyiqa, call
 `register_metric()` with an object implementing `Metric`.
+
+Dimensionality
+--------------
+Every metric here is 2D: it scores one slice at a time, and a volume-level
+number is an aggregation over per-slice scores (see IQAEvaluator), never a
+true 3D measurement. That is a property of the metrics, not a shortcut:
+
+  fsim  phase congruency from a 2D log-Gabor bank (4 scales x 4 orientations
+        in the 2D Fourier plane) plus 2D Scharr gradients.
+  gmsd  2D Prewitt kernels; the score is the std of the 2D gradient-magnitude
+        similarity map. Of the three this is the only one with a natural 3D
+        form (3x3x3 kernels, magnitude over x/y/z), which would however no
+        longer be comparable to published GMSD values.
+  vsi   SDSP saliency needs a 2D FFT, a 2D log-Gabor filter and a 2D centre
+        bias prior, and resizes internally to 256x256.
+
+Greyscale caveats (these metrics were designed for RGB photographs):
+
+  fsim  Its chromatic term is exactly neutral on replicated greyscale
+        (I = Q = 0 => S_C == 1), so FSIMc and FSIM agree bit for bit here.
+        The pyiqa default chromatic=True is kept for comparability.
+  gmsd  pyiqa's to_y_channel(x, 255) rounds to 8 bit. For faint distortions
+        on low-contrast slices that quantisation is measurable, so treat
+        very small gmsd values as resolution-limited.
+  vsi   The colour conspicuity term degenerates on greyscale, leaving
+        saliency = frequency prior x centre prior. Constant slices score
+        exactly 1.0 regardless of content — ImageLoader.empty_slice_mask
+        already excludes those from evaluation.
 """
 
 from dataclasses import dataclass, field
@@ -131,6 +159,15 @@ _BUILTIN_SPECS: list[MetricSpec] = [
     # Full-reference metrics
     MetricSpec("psnr",              "higher_is_better", True,  "gray", _pyiqa_factory("psnr")),
     MetricSpec("ssim",              "higher_is_better", True,  "gray", _pyiqa_factory("ssim")),
+    # fsim / gmsd / vsi are 2D-only by construction (2D log-Gabor banks, 2D
+    # gradient kernels, 2D FFT saliency) — see module docstring. They are
+    # computed per slice like every other metric; a volume-level number is an
+    # aggregation over slices, never a true 3D measurement.
+    # channels="rgb" is mandatory, not a preference: fsim asserts 3 channels for
+    # its chromatic term and gmsd's to_y_channel asserts (N, 3, H, W).
+    MetricSpec("fsim",              "higher_is_better", True,  "rgb",  _pyiqa_factory("fsim")),
+    MetricSpec("gmsd",              "lower_is_better",  True,  "rgb",  _pyiqa_factory("gmsd")),
+    MetricSpec("vsi",               "higher_is_better", True,  "rgb",  _pyiqa_factory("vsi")),
     MetricSpec("lpips",             "lower_is_better",  True,  "rgb",  _pyiqa_factory("lpips")),
     MetricSpec("dists",             "lower_is_better",  True,  "rgb",  _pyiqa_factory("dists")),
     MetricSpec("radimagenet_lpips", "lower_is_better",  True,  "rgb",  _pyiqa_factory("radimagenet_lpips", backbone_path=str(RESNET50))),

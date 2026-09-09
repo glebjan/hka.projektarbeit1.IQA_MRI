@@ -192,13 +192,96 @@ class TestPyIQAMetricLPIPS:
 
 
 # ---------------------------------------------------------------------------
-# Built-in registry: all 10 expected metrics registered
+# FSIM / GMSD / VSI — classical 2D full-reference metrics on greyscale input
+# ---------------------------------------------------------------------------
+
+class TestStructuralFRMetrics:
+    """These three are 2D-only and were designed for RGB photographs.
+
+    ImageLoader feeds them replicated greyscale via rgb_tensor, so the tests
+    below pin the greyscale behaviour the framework actually relies on.
+    """
+
+    @staticmethod
+    def _pair(n: int = 2, size: int = 96):
+        """(distorted, reference) as 3-channel replicated greyscale in [0, 1]."""
+        ref = torch.rand(n, 1, size, size)
+        distorted = (ref + 0.15 * torch.rand_like(ref)).clamp(0, 1)
+        return distorted.expand(-1, 3, -1, -1), ref.expand(-1, 3, -1, -1)
+
+    @pytest.mark.parametrize("name", ["fsim", "gmsd", "vsi"])
+    def test_batch_output_length(self, name):
+        m = PyIQAMetric(name)
+        distorted, ref = self._pair(n=3)
+        assert len(m(distorted, ref)) == 3
+
+    @pytest.mark.parametrize("name", ["fsim", "gmsd", "vsi"])
+    def test_returns_floats(self, name):
+        m = PyIQAMetric(name)
+        distorted, ref = self._pair()
+        assert all(isinstance(s, float) for s in m(distorted, ref))
+
+    @pytest.mark.parametrize("name,perfect", [("fsim", 1.0), ("gmsd", 0.0), ("vsi", 1.0)])
+    def test_identical_images_hit_perfect_score(self, name, perfect):
+        m = PyIQAMetric(name)
+        _, ref = self._pair(n=1)
+        assert m(ref, ref)[0] == pytest.approx(perfect, abs=1e-4)
+
+    @pytest.mark.parametrize("name", ["fsim", "vsi"])
+    def test_higher_is_better_degrades_with_noise(self, name):
+        m = PyIQAMetric(name)
+        distorted, ref = self._pair(n=1)
+        assert m(distorted, ref)[0] < m(ref, ref)[0]
+
+    def test_gmsd_lower_is_better_grows_with_noise(self):
+        m = PyIQAMetric("gmsd")
+        distorted, ref = self._pair(n=1)
+        assert m(distorted, ref)[0] > m(ref, ref)[0]
+
+    @pytest.mark.parametrize("name", ["fsim", "gmsd"])
+    def test_rejects_single_channel_input(self, name):
+        """channels="rgb" in the MetricSpec is mandatory, not a preference.
+
+        fsim asserts 3 channels for its chromatic term, gmsd's to_y_channel
+        asserts (N, 3, H, W).
+        """
+        m = PyIQAMetric(name)
+        gray = torch.rand(1, 1, 96, 96)
+        with pytest.raises(Exception):
+            m(gray, gray)
+
+    def test_vsi_tolerates_grey_but_warns(self):
+        """vsi replicates 1 channel itself — same score, one warning per call.
+
+        We still register it as "rgb" so ImageLoader.rgb_tensor does the
+        replication once instead of pyiqa warning on every batch.
+        """
+        m = PyIQAMetric("vsi")
+        gray = torch.rand(2, 1, 96, 96)
+        with pytest.warns(UserWarning):
+            from_gray = m(gray, gray)
+        assert from_gray == pytest.approx(m(gray.expand(-1, 3, -1, -1),
+                                            gray.expand(-1, 3, -1, -1)), abs=1e-9)
+
+    def test_fsim_chromatic_term_is_neutral_on_greyscale(self):
+        """FSIMc == FSIM here: replicated grey has I = Q = 0, so S_C == 1."""
+        distorted, ref = self._pair(n=2)
+        chromatic = PyIQAMetric("fsim")                    # pyiqa default: chromatic=True
+        achromatic = PyIQAMetric("fsim", chromatic=False)
+        assert chromatic(distorted, ref) == pytest.approx(achromatic(distorted, ref), abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Built-in registry: all 13 expected metrics registered
 # ---------------------------------------------------------------------------
 
 class TestBuiltinRegistry:
     EXPECTED = {
         "psnr":               ("higher_is_better", True,  "gray"),
         "ssim":               ("higher_is_better", True,  "gray"),
+        "fsim":               ("higher_is_better", True,  "rgb"),
+        "gmsd":               ("lower_is_better",  True,  "rgb"),
+        "vsi":                ("higher_is_better", True,  "rgb"),
         "lpips":              ("lower_is_better",  True,  "rgb"),
         "dists":              ("lower_is_better",  True,  "rgb"),
         "radimagenet_lpips":  ("lower_is_better",  True,  "rgb"),

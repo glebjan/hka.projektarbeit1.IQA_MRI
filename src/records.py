@@ -16,6 +16,9 @@ class ImageEvaluatorRecord:
     # Full-reference metrics (None when no target is available)
     psnr:                Optional[float] = None
     ssim:                Optional[float] = None
+    fsim:                Optional[float] = None
+    gmsd:                Optional[float] = None
+    vsi:                 Optional[float] = None
     lpips:               Optional[float] = None
     dists:               Optional[float] = None
     radimagenet_lpips:   Optional[float] = None
