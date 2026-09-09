@@ -294,11 +294,17 @@ CLIP_IQA_LUNG     = MetricSpec("clip_iqa_lung",     "higher_is_better", False, "
 CLIP_IQA_BRAIN    = MetricSpec("clip_iqa_brain",    "higher_is_better", False, "rgb",  ModeSupport(_pyiqa_factory("clip_iqa_brain")), ModeUnsupported(REASON_DEEP_2D))
 BRISQUE           = MetricSpec("brisque",           "lower_is_better",  False, "rgb",  ModeSupport(_pyiqa_factory("brisque")),        ModeUnsupported(REASON_DEEP_2D))
 NIQE              = MetricSpec("niqe",              "lower_is_better",  False, "rgb",  ModeSupport(_pyiqa_factory("niqe")),           ModeUnsupported(REASON_DEEP_2D))
+MUSIQ             = MetricSpec("musiq",             "higher_is_better", False, "rgb",  ModeSupport(_pyiqa_factory("musiq")),          ModeUnsupported(REASON_DEEP_2D))
+MANIQA            = MetricSpec("maniqa",            "higher_is_better", False, "rgb",  ModeSupport(_pyiqa_factory("maniqa")),         ModeUnsupported(REASON_DEEP_2D))
+PAQ2PIQ           = MetricSpec("paq2piq",           "higher_is_better", False, "rgb",  ModeSupport(_pyiqa_factory("paq2piq")),        ModeUnsupported(REASON_DEEP_2D))
+PIQE              = MetricSpec("piqe",              "lower_is_better",  False, "rgb",  ModeSupport(_pyiqa_factory("piqe")),           ModeUnsupported(REASON_DEEP_2D))
+ILNIQE            = MetricSpec("ilniqe",            "lower_is_better",  False, "rgb",  ModeSupport(_pyiqa_factory("ilniqe")),         ModeUnsupported(REASON_DEEP_2D))
 
 # Convenience bundle for "just register everything" — not registered by default.
 BUILTIN_METRICS = (
     PSNR, SSIM, LPIPS, DISTS, RADIMAGENET_LPIPS, FSIM, GMSD, VSI,
     CLIPIQA, CLIP_IQA_LUNG, CLIP_IQA_BRAIN, BRISQUE, NIQE,
+    MUSIQ, MANIQA, PAQ2PIQ, PIQE, ILNIQE,
 )
 
 # MONAI-backed segmentation-quality metrics (evaluate masks, not images) —

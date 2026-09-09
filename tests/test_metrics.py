@@ -1,4 +1,6 @@
 """Tests for src/metrics.py — MetricRegistry, MetricSpec, PyIQAMetric, DEVICE."""
+import math
+
 import torch
 import pytest
 
@@ -286,6 +288,39 @@ class TestPyIQAMetricStructuralFR:
         assert all(isinstance(s, float) for s in m(inp, inp))
 
 
+class TestPyIQAMetricStructuralNR:
+    """MUSIQ / MANIQA / PaQ-2-PiQ / PIQE / IL-NIQE: no-reference, RGB channel.
+
+    A no-reference metric is defined by needing no target at all, so that is
+    what these cases pin down; the spec supplies the direction.
+    """
+
+    NAMES = ["musiq", "maniqa", "paq2piq", "piqe", "ilniqe"]
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_scores_without_a_target(self, name):
+        m = PyIQAMetric(name)
+        scores = m(torch.rand(1, 3, 96, 96))
+        assert len(scores) == 1
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_returns_finite_floats(self, name):
+        m = PyIQAMetric(name)
+        scores = m(torch.rand(2, 3, 96, 96))
+        assert all(isinstance(s, float) and math.isfinite(s) for s in scores)
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_batch_output_length(self, name):
+        m = PyIQAMetric(name)
+        assert len(m(torch.rand(3, 3, 96, 96))) == 3
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_same_image_scores_the_same(self, name):
+        m = PyIQAMetric(name)
+        inp = torch.rand(1, 3, 96, 96)
+        assert m(inp)[0] == pytest.approx(m(inp)[0], rel=1e-4)
+
+
 # ---------------------------------------------------------------------------
 # Built-in metric specs: exposed as constants, not auto-registered
 # ---------------------------------------------------------------------------
@@ -305,6 +340,11 @@ class TestBuiltinMetrics:
         "clip_iqa_brain":     ("higher_is_better", False, "rgb"),
         "brisque":            ("lower_is_better",  False, "rgb"),
         "niqe":               ("lower_is_better",  False, "rgb"),
+        "musiq":              ("higher_is_better", False, "rgb"),
+        "maniqa":             ("higher_is_better", False, "rgb"),
+        "paq2piq":            ("higher_is_better", False, "rgb"),
+        "piqe":               ("lower_is_better",  False, "rgb"),
+        "ilniqe":             ("lower_is_better",  False, "rgb"),
     }
 
     def test_not_registered_by_default(self):
@@ -501,13 +541,14 @@ class TestRegisterMetricVolume:
 
 
 class TestBuiltinCapabilities:
-    def test_eleven_builtins_cannot_do_volume(self):
+    def test_sixteen_builtins_cannot_do_volume(self):
         registry = MetricRegistry(*BUILTIN_METRICS)
         _, skipped = registry.select("volume")
         assert sorted(s.name for s in skipped) == sorted([
             "lpips", "dists", "radimagenet_lpips", "clipiqa",
             "clip_iqa_lung", "clip_iqa_brain", "brisque", "niqe",
             "fsim", "gmsd", "vsi",
+            "musiq", "maniqa", "paq2piq", "piqe", "ilniqe",
         ])
 
     def test_all_share_the_same_reason(self):

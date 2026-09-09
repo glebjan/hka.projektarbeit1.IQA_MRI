@@ -4,7 +4,8 @@ import pytest
 
 from image_loader import ImageLoader, LoadedImage
 from iqa_evaluator import IQAEvaluator, BATCH_SIZE
-from metrics import MetricRegistry, MetricSpec, ModeSupport, PSNR, SSIM, FSIM, GMSD, VSI
+from metrics import (MetricRegistry, MetricSpec, ModeSupport, PSNR, SSIM,
+                     FSIM, GMSD, VSI, MUSIQ, MANIQA, PAQ2PIQ, PIQE, ILNIQE)
 from records import ImageEvaluatorRecord
 
 
@@ -278,4 +279,22 @@ class TestStructuralFRMetricsEndToEnd:
             assert isinstance(record.fsim, float)
             assert isinstance(record.gmsd, float)
             assert isinstance(record.vsi, float)
+            assert record.extra == {}
+
+
+class TestStructuralNRMetricsEndToEnd:
+    """A registered no-reference run needs no target and fills its own fields."""
+
+    def test_scores_land_in_dedicated_fields(self):
+        inp = _make_loader(2, 96, 96)
+        registry = MetricRegistry(MUSIQ, MANIQA, PAQ2PIQ, PIQE, ILNIQE)
+        records = IQAEvaluator(inp, None, registry).run_evaluation()
+
+        assert len(records) == 2
+        for record in records:
+            assert isinstance(record.musiq, float)
+            assert isinstance(record.maniqa, float)
+            assert isinstance(record.paq2piq, float)
+            assert isinstance(record.piqe, float)
+            assert isinstance(record.ilniqe, float)
             assert record.extra == {}

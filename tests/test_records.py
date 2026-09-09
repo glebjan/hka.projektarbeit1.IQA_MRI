@@ -80,3 +80,36 @@ class TestStructuralFRFields:
     def test_not_stored_in_extra(self):
         record = ImageEvaluatorRecord(image_id="img", fsim=0.9)
         assert "fsim" not in record.extra
+
+
+class TestStructuralNRFields:
+    """musiq / maniqa / paq2piq / piqe / ilniqe are builtin metrics too.
+
+    Same silent-drop hazard as the full-reference block: setattr on a
+    dataclass without the field never reaches asdict().
+    """
+
+    NAMES = ["musiq", "maniqa", "paq2piq", "piqe", "ilniqe"]
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_field_defaults_to_none(self, name):
+        record = ImageEvaluatorRecord(image_id="img")
+        assert getattr(record, name) is None
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_field_is_declared_not_ad_hoc(self, name):
+        assert name in ImageEvaluatorRecord.__annotations__
+
+    def test_values_survive_to_dict(self):
+        record = ImageEvaluatorRecord(image_id="img", musiq=52.1, maniqa=0.41,
+                                      paq2piq=71.3, piqe=38.0, ilniqe=24.5)
+        d = record.to_dict()
+        assert d["musiq"]   == 52.1
+        assert d["maniqa"]  == 0.41
+        assert d["paq2piq"] == 71.3
+        assert d["piqe"]    == 38.0
+        assert d["ilniqe"]  == 24.5
+
+    def test_not_stored_in_extra(self):
+        record = ImageEvaluatorRecord(image_id="img", musiq=52.1)
+        assert "musiq" not in record.extra
