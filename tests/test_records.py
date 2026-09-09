@@ -50,3 +50,33 @@ class TestRecordsHasNoMetricsDependency:
     def test_mask_writer_module_is_gone(self):
         with pytest.raises(ModuleNotFoundError):
             import mask_writer  # noqa: F401
+
+
+class TestStructuralFRFields:
+    """fsim / gmsd / vsi are builtin metrics, so they need dedicated fields.
+
+    Builtin scores are written with setattr(record, spec.name, value); on a
+    dataclass without the field that write is silently dropped by asdict().
+    """
+
+    NAMES = ["fsim", "gmsd", "vsi"]
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_field_defaults_to_none(self, name):
+        record = ImageEvaluatorRecord(image_id="img")
+        assert getattr(record, name) is None
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_field_is_declared_not_ad_hoc(self, name):
+        assert name in ImageEvaluatorRecord.__annotations__
+
+    def test_values_survive_to_dict(self):
+        record = ImageEvaluatorRecord(image_id="img", fsim=0.9, gmsd=0.05, vsi=0.97)
+        d = record.to_dict()
+        assert d["fsim"] == 0.9
+        assert d["gmsd"] == 0.05
+        assert d["vsi"] == 0.97
+
+    def test_not_stored_in_extra(self):
+        record = ImageEvaluatorRecord(image_id="img", fsim=0.9)
+        assert "fsim" not in record.extra

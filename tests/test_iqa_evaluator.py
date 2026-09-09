@@ -4,7 +4,7 @@ import pytest
 
 from image_loader import ImageLoader, LoadedImage
 from iqa_evaluator import IQAEvaluator, BATCH_SIZE
-from metrics import MetricRegistry, MetricSpec, ModeSupport, PSNR, SSIM
+from metrics import MetricRegistry, MetricSpec, ModeSupport, PSNR, SSIM, FSIM, GMSD, VSI
 from records import ImageEvaluatorRecord
 
 
@@ -262,3 +262,20 @@ class TestPerRunMetricSelection:
         assert "metric_b" not in recs_a[0].extra
         assert "metric_b" in recs_b[0].extra
         assert "metric_a" not in recs_b[0].extra
+
+
+class TestStructuralFRMetricsEndToEnd:
+    """A registered fsim/gmsd/vsi run must land in the record's own fields."""
+
+    def test_scores_land_in_dedicated_fields(self):
+        inp = _make_loader(2, 96, 96)
+        tgt = _make_loader(2, 96, 96)
+        registry = MetricRegistry(FSIM, GMSD, VSI)
+        records = IQAEvaluator(inp, tgt, registry).run_evaluation()
+
+        assert len(records) == 2
+        for record in records:
+            assert isinstance(record.fsim, float)
+            assert isinstance(record.gmsd, float)
+            assert isinstance(record.vsi, float)
+            assert record.extra == {}

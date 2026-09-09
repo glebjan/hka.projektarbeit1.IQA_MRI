@@ -25,6 +25,9 @@ class ImageEvaluatorRecord:
     lpips:               Optional[float] = None
     dists:               Optional[float] = None
     radimagenet_lpips:   Optional[float] = None
+    fsim:                Optional[float] = None
+    gmsd:                Optional[float] = None
+    vsi:                 Optional[float] = None
     # No-reference metrics
     clipiqa:             Optional[float] = None
     clip_iqa_lung:       Optional[float] = None
