@@ -240,6 +240,52 @@ class TestPyIQAMetricLPIPS:
         assert len(scores) == 3
 
 
+class TestPyIQAMetricStructuralFR:
+    """FSIM / GMSD / VSI: classical full-reference, RGB channel, no downloaded weights.
+
+    `perfect` is the score for two identical images; the metric must move away
+    from it once the pair differs. Direction comes from the MetricSpec.
+    """
+
+    # name, score for an identical pair, direction
+    CASES = [
+        ("fsim", 1.0, "higher_is_better"),
+        ("gmsd", 0.0, "lower_is_better"),
+        ("vsi",  1.0, "higher_is_better"),
+    ]
+
+    @pytest.mark.parametrize("name,perfect,_direction", CASES)
+    def test_identical_images_hit_the_perfect_score(self, name, perfect, _direction):
+        m = PyIQAMetric(name)
+        inp = torch.rand(1, 3, 96, 96)
+        scores = m(inp, inp)
+        assert len(scores) == 1
+        assert scores[0] == pytest.approx(perfect, abs=1e-3)
+
+    @pytest.mark.parametrize("name,perfect,direction", CASES)
+    def test_different_images_score_worse(self, name, perfect, direction):
+        m = PyIQAMetric(name)
+        a = torch.rand(1, 3, 96, 96)
+        b = torch.rand(1, 3, 96, 96)
+        score = m(a, b)[0]
+        if direction == "higher_is_better":
+            assert score < perfect
+        else:
+            assert score > perfect
+
+    @pytest.mark.parametrize("name,_perfect,_direction", CASES)
+    def test_batch_output_length(self, name, _perfect, _direction):
+        m = PyIQAMetric(name)
+        inp = torch.rand(3, 3, 96, 96)
+        assert len(m(inp, inp)) == 3
+
+    @pytest.mark.parametrize("name,_perfect,_direction", CASES)
+    def test_returns_list_of_floats(self, name, _perfect, _direction):
+        m = PyIQAMetric(name)
+        inp = torch.rand(2, 3, 96, 96)
+        assert all(isinstance(s, float) for s in m(inp, inp))
+
+
 # ---------------------------------------------------------------------------
 # Built-in metric specs: exposed as constants, not auto-registered
 # ---------------------------------------------------------------------------
@@ -251,6 +297,9 @@ class TestBuiltinMetrics:
         "lpips":              ("lower_is_better",  True,  "rgb"),
         "dists":              ("lower_is_better",  True,  "rgb"),
         "radimagenet_lpips":  ("lower_is_better",  True,  "rgb"),
+        "fsim":               ("higher_is_better", True,  "rgb"),
+        "gmsd":               ("lower_is_better",  True,  "rgb"),
+        "vsi":                ("higher_is_better", True,  "rgb"),
         "clipiqa":            ("higher_is_better", False, "rgb"),
         "clip_iqa_lung":      ("higher_is_better", False, "rgb"),
         "clip_iqa_brain":     ("higher_is_better", False, "rgb"),
@@ -452,12 +501,13 @@ class TestRegisterMetricVolume:
 
 
 class TestBuiltinCapabilities:
-    def test_eight_builtins_cannot_do_volume(self):
+    def test_eleven_builtins_cannot_do_volume(self):
         registry = MetricRegistry(*BUILTIN_METRICS)
         _, skipped = registry.select("volume")
         assert sorted(s.name for s in skipped) == sorted([
             "lpips", "dists", "radimagenet_lpips", "clipiqa",
             "clip_iqa_lung", "clip_iqa_brain", "brisque", "niqe",
+            "fsim", "gmsd", "vsi",
         ])
 
     def test_all_share_the_same_reason(self):

@@ -285,6 +285,9 @@ SSIM = MetricSpec("ssim", "higher_is_better", True, "gray",
 LPIPS             = MetricSpec("lpips",             "lower_is_better",  True,  "rgb",  ModeSupport(_pyiqa_factory("lpips")),  ModeUnsupported(REASON_DEEP_2D))
 DISTS             = MetricSpec("dists",             "lower_is_better",  True,  "rgb",  ModeSupport(_pyiqa_factory("dists")),  ModeUnsupported(REASON_DEEP_2D))
 RADIMAGENET_LPIPS = MetricSpec("radimagenet_lpips", "lower_is_better",  True,  "rgb",  ModeSupport(_pyiqa_factory("radimagenet_lpips", backbone_path=str(RESNET50))), ModeUnsupported(REASON_DEEP_2D))
+FSIM              = MetricSpec("fsim",              "higher_is_better", True,  "rgb",  ModeSupport(_pyiqa_factory("fsim")),   ModeUnsupported(REASON_DEEP_2D))
+GMSD              = MetricSpec("gmsd",              "lower_is_better",  True,  "rgb",  ModeSupport(_pyiqa_factory("gmsd")),   ModeUnsupported(REASON_DEEP_2D))
+VSI               = MetricSpec("vsi",               "higher_is_better", True,  "rgb",  ModeSupport(_pyiqa_factory("vsi")),    ModeUnsupported(REASON_DEEP_2D))
 # No-reference metrics
 CLIPIQA           = MetricSpec("clipiqa",           "higher_is_better", False, "rgb",  ModeSupport(_pyiqa_factory("clipiqa")),        ModeUnsupported(REASON_DEEP_2D))
 CLIP_IQA_LUNG     = MetricSpec("clip_iqa_lung",     "higher_is_better", False, "rgb",  ModeSupport(_pyiqa_factory("clip_iqa_lung")),  ModeUnsupported(REASON_DEEP_2D))
@@ -294,7 +297,7 @@ NIQE              = MetricSpec("niqe",              "lower_is_better",  False, "
 
 # Convenience bundle for "just register everything" — not registered by default.
 BUILTIN_METRICS = (
-    PSNR, SSIM, LPIPS, DISTS, RADIMAGENET_LPIPS,
+    PSNR, SSIM, LPIPS, DISTS, RADIMAGENET_LPIPS, FSIM, GMSD, VSI,
     CLIPIQA, CLIP_IQA_LUNG, CLIP_IQA_BRAIN, BRISQUE, NIQE,
 )
 
