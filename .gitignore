@@ -33,3 +33,7 @@ tests/**/*.pyd
 !.vscode/launch.json
 !.vscode/extensions.json
 
+
+# Claude Code project skills + hooks
+!.claude/
+!.claude/**
