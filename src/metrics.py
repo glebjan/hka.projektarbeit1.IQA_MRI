@@ -15,6 +15,10 @@ To add a custom metric without touching main.py or pyiqa, call
 Built-in metrics (below) are exposed as `MetricSpec` constants (`PSNR`,
 `SSIM`, ...) — nothing is registered until the caller opts in by passing
 them to a registry, e.g. `MetricRegistry(PSNR, SSIM)`.
+
+DreamSim is the one built-in that is not pyiqa-backed and not part of
+`BUILTIN_METRICS`: build its spec with `dreamsim_spec(...)` (or use the
+`DREAMSIM` default) and register it explicitly.
 """
 
 from dataclasses import dataclass, field
@@ -27,6 +31,7 @@ import radimagenet_lpips  # noqa: F401 — registers RadImageNetLPIPS in pyiqa
 import clip_iqa_medical   # noqa: F401 — registers ClipIQALung / ClipIQABrain in pyiqa
 
 from constants import RESNET50
+
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -273,6 +278,10 @@ from segmentation_metrics.boundary_iou import BOUNDARY_IOU
 from segmentation_metrics.volume_metrics import (
     VS, VS_SIGNED, V_PRED, V_GT, TP,
 )
+
+# Same cycle, same reason: dreamsim_metric.py does `from metrics import
+# MetricSpec`, so this import has to come after MetricSpec is defined.
+from dreamsim_metric import DREAMSIM, dreamsim_spec
 
 
 # Full-reference metrics (need a target image)

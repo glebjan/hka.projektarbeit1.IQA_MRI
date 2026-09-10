@@ -28,6 +28,7 @@ class ImageEvaluatorRecord:
     fsim:                Optional[float] = None
     gmsd:                Optional[float] = None
     vsi:                 Optional[float] = None
+    dreamsim:            Optional[float] = None
     # No-reference metrics
     clipiqa:             Optional[float] = None
     clip_iqa_lung:       Optional[float] = None

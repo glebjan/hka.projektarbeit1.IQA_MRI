@@ -113,3 +113,25 @@ class TestStructuralNRFields:
     def test_not_stored_in_extra(self):
         record = ImageEvaluatorRecord(image_id="img", musiq=52.1)
         assert "musiq" not in record.extra
+
+
+class TestDreamSimField:
+    """dreamsim's default spec is builtin=True, so it needs a dedicated field.
+
+    Builtin scores are written with setattr(record, spec.name, value); on a
+    dataclass without the field, that write is silently dropped by asdict().
+    """
+
+    def test_field_defaults_to_none(self):
+        assert ImageEvaluatorRecord(image_id="img").dreamsim is None
+
+    def test_field_is_declared_not_ad_hoc(self):
+        assert "dreamsim" in ImageEvaluatorRecord.__annotations__
+
+    def test_value_survives_to_dict(self):
+        record = ImageEvaluatorRecord(image_id="img", dreamsim=0.12)
+        assert record.to_dict()["dreamsim"] == 0.12
+
+    def test_not_stored_in_extra(self):
+        record = ImageEvaluatorRecord(image_id="img", dreamsim=0.12)
+        assert "dreamsim" not in record.extra

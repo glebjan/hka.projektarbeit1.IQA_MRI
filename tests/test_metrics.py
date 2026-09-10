@@ -570,3 +570,25 @@ class TestNotRankedDirection:
             builtin=False,
         )
         assert MetricRegistry(spec).direction == {"count": "not_ranked"}
+
+
+class TestDreamSimIsReachableButOptIn:
+    def test_metrics_module_reexports_the_spec(self):
+        from dreamsim_metric import DREAMSIM as _DREAMSIM
+        from metrics import DREAMSIM
+        assert DREAMSIM is _DREAMSIM
+
+    def test_metrics_module_reexports_the_factory(self):
+        from metrics import dreamsim_spec
+        assert dreamsim_spec().name == "dreamsim"
+
+    def test_kept_out_of_builtin_metrics(self):
+        assert "dreamsim" not in {s.name for s in BUILTIN_METRICS}
+
+    def test_builtin_bundle_still_has_eighteen_entries(self):
+        assert len(BUILTIN_METRICS) == 18
+
+    def test_main_reexports_it_too(self):
+        import main
+        assert main.DREAMSIM.name == "dreamsim"
+        assert main.dreamsim_spec is not None
