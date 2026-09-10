@@ -27,7 +27,7 @@ import torch
 import torch.nn.functional as F
 
 from constants import DREAMSIM_CACHE
-from metrics import DEVICE
+from metrics import DEVICE, MetricSpec, ModeSupport, ModeUnsupported, REASON_DEEP_2D
 
 # DreamSim's ViTs have fixed positional embeddings — 224x224 is not a
 # suggestion, it is the only accepted input size.
@@ -183,3 +183,154 @@ class DreamSimMetric:
                 for i in range(n)
             ]
         return scores
+
+
+# ---------------------------------------------------------------------------
+# Spec factory
+# ---------------------------------------------------------------------------
+
+def _derive_name(
+    dreamsim_type:    str,
+    pretrained:       bool,
+    normalize_embeds: bool,
+    use_patch_model:  bool,
+) -> str:
+    """Build a metric name that is unique per scoring-relevant configuration.
+
+    Only what changes the score enters the name; `device` and `cache_dir` do
+    not. Suffix order is fixed — type, patch, scratch, rawembeds — so the same
+    configuration always yields the same column in the report.
+    """
+    parts = ["dreamsim"]
+    if dreamsim_type != "ensemble":
+        parts.append(dreamsim_type)
+    if use_patch_model:
+        parts.append("patch")
+    if not pretrained:
+        parts.append("scratch")
+    if not normalize_embeds:
+        parts.append("rawembeds")
+    return "_".join(parts)
+
+
+def dreamsim_spec(
+    *,
+    dreamsim_type:    str = "ensemble",
+    pretrained:       bool = True,
+    device:           Optional[str | torch.device] = None,
+    cache_dir:        Path = DREAMSIM_CACHE,
+    normalize_embeds: bool = True,
+    use_patch_model:  bool = False,
+    name:             Optional[str] = None,
+) -> MetricSpec:
+    """Build a configured DreamSim `MetricSpec`.
+
+    `MetricSpec` is a frozen, static description; configuration lives in the
+    factory closure, the same seam `_pyiqa_factory("radimagenet_lpips",
+    backbone_path=...)` uses in metrics.py.
+
+        registry = MetricRegistry(PSNR, SSIM, DREAMSIM)
+        registry = MetricRegistry(dreamsim_spec(dreamsim_type="dino_vitb16",
+                                               device="mps"))
+
+    The scores are a distance: lower is more similar, roughly within [0, 1]
+    when `normalize_embeds` is True.
+
+    Args:
+        dreamsim_type: which backbones produce the embedding. "ensemble"
+            (default) concatenates DINO ViT-B/16 + CLIP ViT-B/32 + OpenCLIP
+            ViT-B/32, each LoRA-finetuned; it agrees best with human judgement
+            and costs three forward passes per image — six per slice pair —
+            plus roughly three times the weights and memory. A single backbone
+            ("dino_vitb16", "clip_vitb32", "open_clip_vitb32", "dinov2_vitb14",
+            "synclr_vitb16") is about a third of the cost and slightly weaker.
+            They differ in kind, not just in size: DINO/DINOv2 are
+            self-supervised and carry more structural and textural
+            information, CLIP/OpenCLIP are language-supervised and carry more
+            semantics. For MRI, structure is usually the relevant axis.
+            Worth changing: iterate on a single backbone, produce final numbers
+            with "ensemble", and never mix the two within one comparison —
+            they are different scales.
+        pretrained: True loads DreamSim's LoRA weights, trained on human
+            similarity judgements over natural images (NIGHTS). False yields
+            the raw, unfinetuned backbones. Both the finetuning and the
+            backbones' own pretraining are generic-domain, which is why a
+            dreamsim score ranks MRI reconstructions but does not measure
+            diagnostic quality. Worth changing: running the same evaluation
+            with False is the cheapest available ablation for how much the
+            natural-image prior contributes here — if the ranking barely
+            moves, the finetuning is not transferring. For a medically
+            pretrained perceptual metric, see `radimagenet_lpips`.
+        device: None resolves to the framework's global `DEVICE` (cuda if
+            available, else cpu). Worth changing: "mps" on Apple Silicon,
+            "cpu" when a backend lacks an op, "cuda:N" to pick a GPU, or when
+            memory is tight — the ensemble holds three ViTs at once.
+        cache_dir: where the weights are downloaded on first use. Defaults to
+            `constants.DREAMSIM_CACHE`. Worth changing to share one cache
+            across projects.
+        normalize_embeds: L2-normalizes embeddings before the distance is
+            taken. True is the reference configuration and keeps scores in
+            roughly [0, 1]. False lets embedding magnitude enter the distance,
+            so values stop being comparable across images — experiments only.
+        use_patch_model: use dense patch features alongside the CLS token,
+            making the metric more sensitive to local fine-structure
+            differences (plausibly better for MRI artefacts) at a higher
+            compute cost. Only available for the types in `PATCH_CAPABLE`.
+        name: overrides the derived metric name. Use it when two specs differ
+            only in a parameter the name ignores (`device`, `cache_dir`) and
+            both should appear in one report.
+
+    Returns:
+        A `MetricSpec` whose `volume_mode` is unsupported: DreamSim is a 2D
+        ViT and has no way to see a slice stack as one body.
+
+    Raises:
+        ValueError: on an unknown `dreamsim_type`, or `use_patch_model=True`
+            for a type without a patch variant.
+    """
+    if dreamsim_type not in VALID_TYPES:
+        raise ValueError(
+            f"unknown dreamsim_type '{dreamsim_type}' — valid types are: "
+            + ", ".join(VALID_TYPES)
+        )
+    if use_patch_model and dreamsim_type not in PATCH_CAPABLE:
+        raise ValueError(
+            f"use_patch_model is only available for {' and '.join(PATCH_CAPABLE)}, "
+            f"not for '{dreamsim_type}'"
+        )
+
+    metric_name = name or _derive_name(
+        dreamsim_type, pretrained, normalize_embeds, use_patch_model
+    )
+
+    def build() -> DreamSimMetric:
+        return DreamSimMetric(
+            dreamsim_type=dreamsim_type,
+            pretrained=pretrained,
+            device=device,
+            cache_dir=cache_dir,
+            normalize_embeds=normalize_embeds,
+            use_patch_model=use_patch_model,
+        )
+
+    return MetricSpec(
+        metric_name,
+        "lower_is_better",
+        True,
+        "rgb",
+        ModeSupport(build),
+        ModeUnsupported(REASON_DEEP_2D),
+        # Only the default configuration owns a dedicated
+        # ImageEvaluatorRecord field; variants land in record.extra, which the
+        # report flattens automatically.
+        builtin=(metric_name == "dreamsim"),
+    )
+
+
+# The default ensemble configuration. Deliberately NOT part of
+# BUILTIN_METRICS: registering it downloads about a gigabyte of weights and
+# spends six ViT forward passes per slice pair, which no default run should do
+# behind the user's back. Opt in explicitly:
+#
+#     registry = MetricRegistry(*BUILTIN_METRICS, DREAMSIM)
+DREAMSIM = dreamsim_spec()

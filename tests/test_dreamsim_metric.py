@@ -175,3 +175,120 @@ class TestErrors:
         inp, ref = pair()
         with pytest.raises(RuntimeError, match=str(DREAMSIM_CACHE)):
             metric(inp, ref)
+
+
+from dreamsim_metric import DREAMSIM, dreamsim_spec
+from metrics import (
+    REASON_DEEP_2D,
+    MetricRegistry,
+    ModeSupport,
+    ModeUnsupported,
+)
+
+
+class TestSpecNaming:
+    CASES = [
+        ({},                                                    "dreamsim"),
+        ({"dreamsim_type": "dino_vitb16"},                       "dreamsim_dino_vitb16"),
+        ({"dreamsim_type": "clip_vitb32"},                       "dreamsim_clip_vitb32"),
+        ({"dreamsim_type": "dino_vitb16", "use_patch_model": True},
+                                                                 "dreamsim_dino_vitb16_patch"),
+        ({"pretrained": False},                                  "dreamsim_scratch"),
+        ({"normalize_embeds": False},                            "dreamsim_rawembeds"),
+        ({"dreamsim_type": "dinov2_vitb14", "pretrained": False},
+                                                                 "dreamsim_dinov2_vitb14_scratch"),
+    ]
+
+    @pytest.mark.parametrize("kwargs,expected", CASES)
+    def test_name_is_derived(self, kwargs, expected):
+        assert dreamsim_spec(**kwargs).name == expected
+
+    def test_device_does_not_change_the_name(self):
+        assert dreamsim_spec(device="cpu").name == "dreamsim"
+
+    def test_cache_dir_does_not_change_the_name(self, tmp_path):
+        assert dreamsim_spec(cache_dir=tmp_path).name == "dreamsim"
+
+    def test_explicit_name_wins(self):
+        assert dreamsim_spec(name="dreamsim_mps").name == "dreamsim_mps"
+
+    def test_distinct_configurations_get_distinct_names(self):
+        names = {dreamsim_spec(**kwargs).name for kwargs, _ in self.CASES}
+        assert len(names) == len(self.CASES)
+
+
+class TestSpecAttributes:
+    def test_default_spec_attributes(self):
+        spec = dreamsim_spec()
+        assert spec.direction == "lower_is_better"
+        assert spec.reference is True
+        assert spec.channels  == "rgb"
+        assert spec.builtin   is True
+        assert spec.domain    == ""
+
+    def test_variants_are_not_builtin(self):
+        assert dreamsim_spec(dreamsim_type="dino_vitb16").builtin is False
+
+    def test_slice_mode_is_supported(self):
+        assert isinstance(dreamsim_spec().slice_mode, ModeSupport)
+
+    def test_volume_mode_is_unsupported_with_the_shared_reason(self):
+        volume_mode = dreamsim_spec().volume_mode
+        assert isinstance(volume_mode, ModeUnsupported)
+        assert volume_mode.reason == REASON_DEEP_2D
+
+    def test_module_constant_is_the_default_spec(self):
+        assert DREAMSIM.name == "dreamsim"
+        assert DREAMSIM.builtin is True
+
+
+class TestSpecValidation:
+    def test_unknown_type_lists_the_valid_ones(self):
+        with pytest.raises(ValueError, match="ensemble"):
+            dreamsim_spec(dreamsim_type="vitb99")
+
+    def test_every_valid_type_is_accepted(self):
+        for name in VALID_TYPES:
+            assert dreamsim_spec(dreamsim_type=name).name.startswith("dreamsim")
+
+    def test_patch_model_rejected_for_incapable_type(self):
+        with pytest.raises(ValueError, match="use_patch_model"):
+            dreamsim_spec(dreamsim_type="clip_vitb32", use_patch_model=True)
+
+    def test_patch_model_accepted_for_capable_types(self):
+        for name in PATCH_CAPABLE:
+            assert dreamsim_spec(dreamsim_type=name, use_patch_model=True).builtin is False
+
+
+class TestSpecFactoryBuildsTheMetric:
+    def test_factory_returns_a_dreamsim_metric(self):
+        metric = dreamsim_spec(device="cpu").slice_mode.factory()
+        assert isinstance(metric, DreamSimMetric)
+        assert metric.device == torch.device("cpu")
+
+    def test_configuration_reaches_the_metric(self):
+        metric = dreamsim_spec(dreamsim_type="dino_vitb16",
+                               use_patch_model=True).slice_mode.factory()
+        assert metric._kwargs["dreamsim_type"]   == "dino_vitb16"
+        assert metric._kwargs["use_patch_model"] is True
+
+    def test_registry_can_hold_two_variants_at_once(self):
+        registry = MetricRegistry(DREAMSIM,
+                                  dreamsim_spec(dreamsim_type="dino_vitb16"))
+        assert sorted(s.name for s in registry.specs) == [
+            "dreamsim", "dreamsim_dino_vitb16",
+        ]
+
+    def test_registry_skips_it_in_volume_mode(self):
+        applicable, skipped = MetricRegistry(DREAMSIM).select("volume")
+        assert applicable == []
+        assert [(s.name, s.reason) for s in skipped] == [("dreamsim", REASON_DEEP_2D)]
+
+    def test_registry_keeps_it_in_slice_mode(self):
+        applicable, skipped = MetricRegistry(DREAMSIM).select("slice")
+        assert [s.name for s in applicable] == ["dreamsim"]
+        assert skipped == []
+
+    def test_registry_caches_the_instance(self):
+        registry = MetricRegistry(dreamsim_spec(device="cpu"))
+        assert registry.get_metric("dreamsim") is registry.get_metric("dreamsim")
