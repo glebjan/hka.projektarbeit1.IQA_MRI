@@ -13,6 +13,9 @@
 !requirements.txt
 !models/
 !models/**
+
+# DreamSim weights are downloaded on demand (~1 GB) — never commit them.
+models/dreamsim/
 !diagram/
 !diagram/**
 !docs/
