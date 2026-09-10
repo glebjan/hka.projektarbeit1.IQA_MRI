@@ -68,6 +68,13 @@ class DreamSimMetric:
     The model is built on the first `__call__`, not in `__init__`, so
     registering the spec costs nothing — no import, no weight download.
 
+    Measured cost (2026-09-10, Apple M-series, warm model, 8 slice pairs of
+    96x96): ensemble ~213 ms per slice pair on cpu and ~115 ms on mps;
+    dino_vitb16 ~70 ms on cpu and ~36 ms on mps. The ensemble is the most
+    expensive metric in the framework — roughly 20 s of compute for a
+    100-slice volume on cpu, three times cheaper on a single backbone — and
+    the first call additionally pays a one-off weight load of tens of seconds.
+
     Args:
         dreamsim_type: which backbones produce the embedding. See
             `dreamsim_spec` for what each choice costs and measures.

@@ -9,6 +9,12 @@ import pytest
 import torch
 
 from constants import DREAMSIM_CACHE
+# metrics must be imported before dreamsim_metric: dreamsim_metric imports
+# metrics at its top and metrics imports it back at the bottom, the same
+# deliberate cycle the segmentation_metrics modules use. Importing the metric
+# module first hits it mid-initialisation. Same order as
+# tests/test_segmentation_metrics.py.
+from metrics import DEVICE
 from dreamsim_metric import (
     INPUT_SIZE,
     PATCH_CAPABLE,
@@ -16,7 +22,6 @@ from dreamsim_metric import (
     DreamSimMetric,
     _import_dreamsim,
 )
-from metrics import DEVICE
 
 
 class FakeModel:
