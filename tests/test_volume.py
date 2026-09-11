@@ -154,3 +154,20 @@ def test_vs_vs_signed_identity_random_masks(seed):
     v = vs(pred, gt)
     vsig = vs_signed(pred, gt)
     assert v == pytest.approx(1 - abs(vsig) / 2)
+
+
+class TestRawLabelMapEndToEnd:
+    def test_one_vs_rest_on_a_raw_loaded_label_map(self, tmp_path):
+        import nibabel as nib
+        from image_loader import ImageLoader
+        from normalization import Raw
+        labels = np.zeros((8, 8, 2), dtype=np.int16)
+        labels[:4, :, 0] = 1
+        labels[4:, :, 0] = 2
+        labels[:, :3, 1] = 3
+        p = tmp_path / "labels.nii"
+        nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p))
+        pred = ImageLoader(p, Raw()).tensor[:, 0].numpy()          # (D, H, W) int16
+        assert v_pred(pred, pred, label=2) == 32.0
+        assert v_pred(pred, pred, label=3) == 24.0
+        assert vs(pred, pred, label=2) == 1.0

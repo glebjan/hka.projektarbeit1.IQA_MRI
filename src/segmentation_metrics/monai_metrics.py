@@ -7,11 +7,13 @@ binary/label mask tensors, e.g. images loaded via `ImageLoader` from mask
 files the user already produced with their own segmentation pipeline; this
 module performs no segmentation itself.
 
-TODO(norm-6): that route is currently lossy. ImageLoader min-max-normalizes
-every file it decodes, so a multi-label mask reaches these metrics as floats
-and is binarized at 0.5 — {0,1,2,3} becomes [0,.333,.667,1], dropping label 1
-into the background and merging labels 2 and 3. A fully-filled mask degenerates
-further (see TODO(norm-7) in image_loader.py). Fix: load masks unnormalized.
+Load mask files with `normalization.Raw()` (`ImageLoader(path, Raw())` or
+`load_pair(..., Raw())`) so they arrive unscaled in their stored dtype. A
+binary 0/1 mask then needs no `threshold`. For a multi-label map, pass
+`threshold=0.0` to score every non-zero label as foreground; these adapters do
+not select a single label — the numpy-backed metrics in `volume.py` do, via
+`label=`. PNG masks store 0/255 and should be loaded with `MinMax()` instead,
+which maps them to exactly {0.0, 1.0}.
 
 MONAI's defaults are calibrated for the medical-imaging domain (physical
 voxel spacing in millimeters, a background-class convention). Each builder
@@ -113,6 +115,9 @@ class MonaiSegmentationMetric:
         self._kwargs     = monai_kwargs
 
     def _binarize(self, t: torch.Tensor) -> torch.Tensor:
+        # Masks loaded with normalization.Raw() arrive in their stored integer
+        # dtype; MONAI's functionals want floats either way.
+        t = t.float()
         return (t > self._threshold).float() if self._threshold is not None else t
 
     def __call__(self, input: torch.Tensor, target: Optional[torch.Tensor] = None) -> list[Optional[float]]:

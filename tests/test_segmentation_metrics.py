@@ -193,6 +193,7 @@ class TestPanopticQualityMetricBuilder:
 # ---------------------------------------------------------------------------
 
 import torch
+from monai.metrics import compute_dice
 from metrics import MetricRegistry, ModeSupport
 from segmentation_metrics.monai_metrics import (
     ASSD, DICE, HAUSDORFF95, NSD, PANOPTIC_QUALITY, hausdorff95_metric,
@@ -247,3 +248,18 @@ class TestSegmentationVolumeMode:
         metric = MetricRegistry(DICE).get_metric("dice")
         pred, gt = _volume_pair((4, 1, 12, 12))
         assert len(metric(pred, gt)) == 4
+
+
+class TestIntegerMasks:
+    def test_identical_integer_masks_score_perfect_dice(self):
+        g = torch.Generator().manual_seed(0)
+        mask = torch.randint(0, 2, (2, 1, 16, 16), generator=g)          # int64
+        metric = MonaiSegmentationMetric(compute_dice, include_background=True)
+        assert metric(mask, mask.clone()) == pytest.approx([1.0, 1.0])
+
+    def test_threshold_zero_makes_every_label_foreground(self):
+        labels = torch.zeros((1, 1, 8, 8), dtype=torch.int16)
+        labels[0, 0, :4] = 1
+        labels[0, 0, 4:] = 3
+        metric = MonaiSegmentationMetric(compute_dice, include_background=True, threshold=0.0)
+        assert metric(labels, torch.ones_like(labels)) == pytest.approx([1.0])
