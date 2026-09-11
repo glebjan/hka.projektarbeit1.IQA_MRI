@@ -84,11 +84,12 @@ class Metric(Protocol):
     format ImageLoader.tensor / .rgb_tensor produce. target is None for
     no-reference metrics. Returns one score per slice in the batch.
 
-    TODO(norm-10): "[0,1]" here means per-image min-max normalized, applied to
-    input and target independently. That contract makes a metric measuring
-    absolute intensity fidelity impossible to write, and it only holds
-    approximately (see TODO(norm-8) in image_loader.py). Fix: make the
-    normalization a strategy chosen per run and state it in this contract.
+    "[0, 1]" is produced by the run's `normalization.Normalizer` (default
+    `MinMax`, per volume; full-reference pairs share the target's range —
+    see `image_loader.load_pair`). A metric therefore never sees absolute
+    intensities; the scale it was given is in the report's `scale_lo/hi`
+    columns. Under the `Raw` strategy the batch keeps its stored dtype —
+    only segmentation metrics are meant to receive that.
     """
     def __call__(self, input: torch.Tensor, target: Optional[torch.Tensor] = None) -> Sequence[float]: ...
 
