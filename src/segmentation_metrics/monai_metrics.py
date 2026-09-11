@@ -116,7 +116,13 @@ class MonaiSegmentationMetric:
 
     def _binarize(self, t: torch.Tensor) -> torch.Tensor:
         # Masks loaded with normalization.Raw() arrive in their stored integer
-        # dtype; MONAI's functionals want floats either way.
+        # dtype. The MONAI functionals wired through this adapter (dice,
+        # HD95, NSD, ASSD) happen to tolerate integer input as of MONAI
+        # 1.6.0, but that tolerance is an internal implementation detail of
+        # a third-party library, not a contract this adapter should lean on
+        # across versions. This cast makes the adapter guarantee a float
+        # tensor at its own boundary regardless of what the installed MONAI
+        # version happens to accept internally.
         t = t.float()
         return (t > self._threshold).float() if self._threshold is not None else t
 

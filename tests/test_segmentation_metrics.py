@@ -1,4 +1,5 @@
 """Tests for src/segmentation_metrics/monai_metrics.py — MONAI-backed segmentation metrics."""
+import numpy as np
 import torch
 import pytest
 
@@ -263,3 +264,52 @@ class TestIntegerMasks:
         labels[0, 0, 4:] = 3
         metric = MonaiSegmentationMetric(compute_dice, include_background=True, threshold=0.0)
         assert metric(labels, torch.ones_like(labels)) == pytest.approx([1.0])
+
+
+class TestRawLabelMapEndToEnd:
+    """End-to-end: a real integer NIfTI label map, loaded via Raw(), through
+    MonaiSegmentationMetric. Mirrors TestRawLabelMapEndToEnd in
+    tests/test_volume.py, which covers the same namesake bug for the
+    numpy-backed volume metrics.
+    """
+
+    def test_multi_label_mask_loaded_raw_scores_perfect_dice(self, tmp_path):
+        import nibabel as nib
+        from image_loader import ImageLoader
+        from normalization import Raw
+
+        # Multi-label mask with all of {0, 1, 2, 3} present so the old
+        # normalize-then-threshold(0.5) bug is reproducible: min-max scaling
+        # this file's own extremes (0..3) maps label 1 to 1/3 = 0.333, which
+        # falls *below* a 0.5 cutoff and is dropped into the background,
+        # while labels 2 (0.667) and 3 (1.0) survive and merge. Verified by
+        # hand: MinMax()-loading this exact file and thresholding at 0.5
+        # scores dice == 0.857, not 1.0 -- label 1's region is missing from
+        # the binarized foreground. Label 1 is the sharpest discriminator:
+        # it is the only label that lands under the cutoff after scaling.
+        labels = np.zeros((10, 4, 1), dtype=np.int16)
+        labels[0:2, :, 0] = 0
+        labels[2:4, :, 0] = 1
+        labels[4:7, :, 0] = 2
+        labels[7:10, :, 0] = 3
+        p = tmp_path / "multi_label.nii"
+        nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p))
+
+        pred = ImageLoader(p, Raw()).tensor  # (D, 1, H, W), int16, unscaled
+        assert pred.dtype == torch.int16
+
+        # Ground truth is the correct one-vs-rest answer this adapter
+        # documents for threshold=0.0: every non-zero label is foreground,
+        # including label 1's region.
+        gt = (pred != 0).float()
+
+        metric = MonaiSegmentationMetric(compute_dice, include_background=True, threshold=0.0)
+        scores = metric(pred, gt)
+
+        # Under the fix, pred binarizes via `value > 0.0` on its raw integer
+        # values, so labels 1, 2 and 3 all become foreground and match gt
+        # exactly. Under the old normalize-then-threshold(0.5) behaviour,
+        # label 1's region would have been scaled to 0.333 and thresholded
+        # away, so pred's foreground would be missing label 1's voxels
+        # entirely and this assertion would fail (dice < 1.0, not 1.0).
+        assert scores == pytest.approx([1.0] * pred.shape[0])
