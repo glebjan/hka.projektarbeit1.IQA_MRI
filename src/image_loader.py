@@ -277,16 +277,37 @@ class ImageLoader:
 
     @property
     def empty_slice_mask(self) -> torch.Tensor:
-        # TODO(norm-3): these fixed thresholds are applied to the NORMALIZED
-        #   tensor, and iqa_evaluator.py drops the slices they flag. Combined
-        #   with the outlier sensitivity of TODO(norm-2) this cascades: a spike
-        #   compressing the volume by ~1000x pushes the std of perfectly normal
-        #   slices from ~0.2 to ~0.0002, so one corrupt voxel can mark a whole
-        #   volume as empty and remove it from the evaluation without a word.
-        #   Fix: test emptiness on the raw data before normalization, or relative
-        #   to the image's own range instead of against an absolute constant.
-        volume = self.tensor.squeeze(1)
-        return (volume.mean(dim=(1, 2)) < 1e-3) | (volume.std(dim=(1, 2)) < 1e-3)
+        """True for slices with (almost) no content; computed on the raw data.
+
+        A slice is empty when its spread is below 0.1 % of the volume's
+        intensity span, or (ordinary intensity images only, see below) its
+        lift above the volume floor is below that same 0.1 %. The span is
+        measured between the 0.5th and 99.5th percentiles, so one spike voxel
+        cannot shrink it and mark healthy slices empty. For a volume whose
+        foreground is rarer than 0.5 % (a small lesion mask) the percentile
+        span collapses to zero and the extremes are used instead — and in
+        that fallback regime the lift test is skipped entirely. A sparse
+        binary mask's foreground mean sits, by construction, only a tiny
+        fraction of the way from floor to ceiling, so the lift test would
+        re-flag the very slice the extremes fallback exists to rescue; the
+        spread test alone is meaningful there. A constant volume has no span
+        at all and every slice counts as empty.
+        """
+        raw = self.raw.astype(np.float32, copy=False)
+        lo, hi = (float(v) for v in np.percentile(raw, [0.5, 99.5]))
+        used_extremes = hi <= lo
+        if used_extremes:
+            lo, hi = float(raw.min()), float(raw.max())
+        span = hi - lo
+        if span <= 0.0:
+            return torch.ones(raw.shape[0], dtype=torch.bool)
+        flat = raw.reshape(raw.shape[0], -1)
+        std  = flat.std(axis=1)
+        empty = std < 1e-3 * span
+        if not used_extremes:
+            lift = flat.mean(axis=1) - lo
+            empty = empty | (lift < 1e-3 * span)
+        return torch.from_numpy(empty)
 
     def log_tensor_shape(self) -> torch.Size:
         shape = self.tensor.shape

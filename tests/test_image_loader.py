@@ -346,6 +346,39 @@ class TestImageLoader:
         # A random image should NOT be marked empty
         assert not bool(mask[0].item())
 
+    def test_empty_slice_mask_survives_a_spike_voxel(self, tmp_path):
+        # One corrupt voxel used to compress the whole volume into a sliver of
+        # [0, 1], pushing every slice's std under the threshold.
+        vol = np.random.default_rng(0).random((32, 32, 6)).astype(np.float32) * 100
+        vol[0, 0, 0] = 1e6
+        p = tmp_path / "spike.nii"
+        nib.save(nib.Nifti1Image(vol, np.eye(4)), str(p))
+        mask = ImageLoader(p).empty_slice_mask
+        assert not mask.any()
+
+    def test_empty_slice_mask_flags_the_blank_slice_only(self, tmp_path):
+        vol = np.random.default_rng(0).random((32, 32, 4)).astype(np.float32) * 100
+        vol[:, :, 2] = 0.0
+        p = tmp_path / "hole.nii"
+        nib.save(nib.Nifti1Image(vol, np.eye(4)), str(p))
+        assert ImageLoader(p).empty_slice_mask.tolist() == [False, False, True, False]
+
+    def test_empty_slice_mask_is_independent_of_the_strategy(self, tmp_path):
+        vol = np.random.default_rng(0).random((32, 32, 4)).astype(np.float32) * 100
+        vol[:, :, 2] = 0.0
+        p = tmp_path / "hole.nii"
+        nib.save(nib.Nifti1Image(vol, np.eye(4)), str(p))
+        assert torch.equal(ImageLoader(p, Raw()).empty_slice_mask, ImageLoader(p).empty_slice_mask)
+
+    def test_empty_slice_mask_keeps_a_sparse_mask_slice(self, tmp_path):
+        # A label map whose foreground is below 0.5 % of the volume: the
+        # percentile span collapses to 0 and must fall back to the extremes.
+        labels = np.zeros((64, 64, 4), dtype=np.int16)
+        labels[10:13, 10, 1] = 1
+        p = tmp_path / "sparse.nii"
+        nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p))
+        assert ImageLoader(p, Raw()).empty_slice_mask.tolist() == [True, False, True, True]
+
     def test_log_tensor_shape_returns_size(self, synthetic_png, capsys):
         loader = ImageLoader(synthetic_png)
         size = loader.log_tensor_shape()
