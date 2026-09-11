@@ -5,7 +5,10 @@ from typing import Optional
 from constants import REPORT
 from evaluation_result import EvaluationResult, _EvaluatedImage
 from evaluator_factory import build_evaluator
-from image_loader import ImageLoader, find_matching_target, list_images
+from image_loader import ImageLoader, find_matching_target, list_images, load_pair
+from normalization import (  # noqa: F401 — re-exported for users
+    NORMALIZER_NAMES, MinMax, Normalizer, Percentile, Raw, normalizer_from_name,
+)
 from metrics import (  # noqa: F401 — re-exported for users
     DEVICE, Metric, MetricSpec, MetricRegistry, ScoringMode, SkippedMetric,
     PSNR, SSIM, LPIPS, DISTS, RADIMAGENET_LPIPS, FSIM, GMSD, VSI,
@@ -48,6 +51,7 @@ def evaluate(
     *,
     registry: MetricRegistry,
     mode: ScoringMode = "slice",
+    normalization: Normalizer = MinMax(),
 ) -> EvaluationResult:
     """Discover input/target images and compute one registry's metrics.
 
@@ -77,19 +81,21 @@ def evaluate(
                      default `class_thresholds` of 1.0 means one voxel in slice
                      mode and one millimetre in volume mode. Compare a column
                      only against other runs in the same mode.
+        normalization: how raw intensities reach the [0, 1] every metric
+                     expects. `MinMax()` (default) scales each image's own
+                     extremes; `Percentile()` scales robust extremes and
+                     changes every score, so compare only against runs with
+                     the same setting; `Raw()` skips scaling and is the right
+                     choice for mask files. With a target, both images are
+                     put on the TARGET's range (fastMRI's convention), so a
+                     prediction that is uniformly too bright is measured as
+                     such. The scale used is written into every row as
+                     `normalization`, `scale_lo`, `scale_hi`; the input's raw
+                     extremes as `input_min`, `input_max`.
 
-                     TODO(norm-4/norm-5): the same caveat applies to the
-                     intensity scale and is not yet stated anywhere the user
-                     sees. ImageLoader normalizes over the whole stack, so a
-                     slice's score depends on the rest of the volume (edge
-                     slices occupy a narrow part of [0,1] and read as poor
-                     quality to brisque/niqe/clipiqa), and slice rows are not
-                     the independent samples the report's boxplot and
-                     describe() treat them as. Across images, "1.0" denotes a
-                     different physical range each time, so averaging psnr over
-                     a dataset averages over incommensurable scales. Fix: make
-                     the normalization scope configurable, record it and the
-                     raw data range per row.
+                     Scaling is per volume, never per slice: a slice's tensor
+                     therefore depends on the rest of its stack, and slice
+                     rows of one volume are not independent samples.
 
     No files are written; use EvaluationResult.generate_report() for output.
     """
@@ -115,12 +121,13 @@ def evaluate(
     def _run_one(inp: Path, tgt: Optional[Path]) -> None:
         nonlocal non_volumetric
         try:
-            input_loader = ImageLoader(inp)
-            input_loader.log_tensor_shape()
             target_loader: Optional[ImageLoader] = None
             if tgt is not None:
-                target_loader = ImageLoader(tgt)
+                input_loader, target_loader = load_pair(inp, tgt, normalization)
                 target_loader.log_tensor_shape()
+            else:
+                input_loader = ImageLoader(inp, normalization)
+            input_loader.log_tensor_shape()
             if mode == "volume" and not input_loader.is_volumetric:
                 print(
                     f"[{inp.name}] skipped: this is not a 3D volume. Its slices "
@@ -193,6 +200,11 @@ def main() -> None:
         "--mode", choices=["slice", "volume"], default="slice",
         help="Score every 2D slice separately (default) or each 3D volume once.",
     )
+    parser.add_argument(
+        "--normalization", choices=list(NORMALIZER_NAMES), default="minmax",
+        help="How intensities reach [0, 1]: each image's extremes (minmax), "
+             "robust 0.5/99.5 percentiles (percentile), or no scaling (raw, for masks).",
+    )
     args = parser.parse_args()
 
     # Reference usage: pick the metrics for this run. Swap BUILTIN_METRICS for
@@ -200,7 +212,10 @@ def main() -> None:
     # evaluate something else — each run owns its own registry.
     registry = MetricRegistry(*BUILTIN_METRICS)
 
-    result = evaluate(args.input, args.target, registry=registry, mode=args.mode)
+    result = evaluate(
+        args.input, args.target, registry=registry, mode=args.mode,
+        normalization=normalizer_from_name(args.normalization),
+    )
     report = result.generate_report(REPORT)
     print(report.describe())
     print(f"Report written: {REPORT}")

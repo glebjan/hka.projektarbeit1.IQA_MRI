@@ -345,3 +345,58 @@ class TestSkippedMetricsAreActuallySkipped:
         assert len(df) == 1
         assert df.iloc[0]["works"] is not None
         assert "flat" not in df.columns
+
+
+# ---------------------------------------------------------------------------
+# Normalization option
+# ---------------------------------------------------------------------------
+
+class TestNormalizationOption:
+    def test_default_is_minmax(self, tmp_path):
+        inp = _make_png(tmp_path / "inp.png")
+        df = evaluate(inp, registry=MetricRegistry(PSNR)).to_frame()
+        assert df["normalization"].iloc[0] == "minmax"
+
+    def test_strategy_is_passed_to_the_loader(self, tmp_path):
+        from normalization import Percentile
+        inp = _make_png(tmp_path / "inp.png")
+        df = evaluate(inp, registry=MetricRegistry(PSNR), normalization=Percentile()).to_frame()
+        assert df["normalization"].iloc[0] == "percentile_0.5_99.5"
+
+    def test_full_reference_run_uses_the_targets_range(self, tmp_path):
+        import nibabel as nib
+        import numpy as np
+        from image_loader import ImageLoader
+        target = np.random.default_rng(0).random((16, 16, 3)) * 800
+        inp_p = tmp_path / "inp.nii"; tgt_p = tmp_path / "tgt.nii"
+        nib.save(nib.Nifti1Image((2 * target + 500).astype(np.float32), np.eye(4)), str(inp_p))
+        nib.save(nib.Nifti1Image(target.astype(np.float32), np.eye(4)), str(tgt_p))
+        df = evaluate(inp_p, tgt_p, registry=MetricRegistry(PSNR)).to_frame()
+        tgt_range = ImageLoader(tgt_p).raw_range
+        assert df["scale_lo"].iloc[0] == tgt_range.lo
+        assert df["scale_hi"].iloc[0] == tgt_range.hi
+        assert df["input_max"].iloc[0] > tgt_range.hi
+
+    def test_main_reexports_the_strategies(self):
+        from normalization import MinMax, Percentile, Raw
+        assert main_module.MinMax is MinMax
+        assert main_module.Percentile is Percentile
+        assert main_module.Raw is Raw
+
+
+class TestNormalizationCLI:
+    def test_flag_selects_the_strategy(self, tmp_path, monkeypatch, capsys):
+        import pandas as pd
+        monkeypatch.setattr("main.BUILTIN_METRICS", (PSNR,))
+        inp = _make_png(tmp_path / "inp.png")
+        report = tmp_path / "report.csv"
+        monkeypatch.setattr("main.REPORT", report)
+        monkeypatch.setattr(sys, "argv", ["main.py", str(inp), "--normalization", "percentile"])
+        main_module.main()
+        assert pd.read_csv(report)["normalization"].iloc[0] == "percentile_0.5_99.5"
+
+    def test_unknown_flag_value_is_rejected(self, tmp_path, monkeypatch):
+        inp = _make_png(tmp_path / "inp.png")
+        monkeypatch.setattr(sys, "argv", ["main.py", str(inp), "--normalization", "zscore"])
+        with pytest.raises(SystemExit):
+            main_module.main()
