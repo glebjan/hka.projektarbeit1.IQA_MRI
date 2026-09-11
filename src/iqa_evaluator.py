@@ -83,9 +83,15 @@ class IQAEvaluator:
     def run_evaluation(self) -> list[ImageEvaluatorRecord]:
         """Evaluate all metrics for every slice.  No files are written."""
         D          = self.input.tensor.shape[0]
-        empty_mask = self.input.empty_slice_mask
         has_target = self.target is not None
         mode       = "full_reference" if has_target else "no_reference"
+
+        # A slice is skipped only when there is nothing to measure on either
+        # side. A blank prediction over an occupied reference is a failure and
+        # gets scored; in a no-reference run the input alone decides.
+        empty_mask = self.input.empty_slice_mask
+        if has_target:
+            empty_mask = empty_mask & self.target.empty_slice_mask
 
         scale_fields = self._scale_fields()
         records = [

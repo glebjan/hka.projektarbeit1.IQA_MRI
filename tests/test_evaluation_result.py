@@ -132,7 +132,7 @@ def _slice_record(image_id, idx, *, v_pred, v_gt, tp, hd95=None):
 
 
 def _empty_slice_record(image_id, idx):
-    """A slice with no voxels: is_empty True, no counts recorded at all."""
+    """A slice blank on both sides: is_empty True, no counts recorded at all."""
     return ImageEvaluatorRecord(
         image_id=f"{image_id}_s{idx:03d}", scoring="slice", slice_index=idx, is_empty=True
     )
@@ -223,33 +223,26 @@ class TestAggregateVolumes:
         with pytest.raises(ValueError, match="already"):
             result.aggregate_volumes()
 
-    def test_blank_prediction_slice_zeroes_only_the_prediction_counts(self):
-        # `is_empty` describes the prediction. A blank prediction contributes no
-        # predicted and no overlapping voxels, so v_pred and tp are real zeros —
-        # but the reference may be occupied there and was never counted, so v_gt
-        # stays unknown and the whole volume comes out NaN.
+    def test_blank_slice_contributes_zeros_to_all_counts(self):
+        # `is_empty` on a full-reference row means BOTH masks are blank there,
+        # so every count on that slice is a real zero.
         records = [
             _empty_slice_record("vol", 0),
             _slice_record("vol", 1, v_pred=8, v_gt=4, tp=4),
         ]
         row = _result(records).aggregate_volumes().loc["vol"]
         assert row["v_pred"] == 8.0
+        assert row["v_gt"] == 4.0
         assert row["tp"] == 4.0
-        assert np.isnan(row["v_gt"])
-        assert np.isnan(row["dice"])
-        assert np.isnan(row["vs"])
-        assert np.isnan(row["vs_signed"])
+        assert row["dice"] == pytest.approx(2 * 4 / 12)
 
-    def test_blank_prediction_slice_is_warned_about_by_name(self, capsys):
+    def test_blank_slice_is_not_warned_about(self, capsys):
         records = [
             _empty_slice_record("vol", 0),
             _slice_record("vol", 1, v_pred=8, v_gt=4, tp=4),
         ]
         _result(records).aggregate_volumes()
-        out = capsys.readouterr().out
-        assert "vol" in out
-        assert "blank" in out
-        assert 'mode="volume"' in out
+        assert capsys.readouterr().out == ""
 
     def test_volume_without_blank_slices_still_gets_real_numbers(self):
         records = [
@@ -263,14 +256,17 @@ class TestAggregateVolumes:
         assert row["dice"] == pytest.approx(2 * 8 / 20)
         assert not np.isnan(row["vs"])
 
-    def test_a_blank_volume_does_not_poison_a_complete_one(self):
+    def test_a_volume_with_a_blank_slice_does_not_affect_another_volume(self):
+        # A blank slice contributes real zeros to its own volume's counts and
+        # is grouped independently — it must not leak into another volume's
+        # totals.
         records = [
             _empty_slice_record("blank", 0),
             _slice_record("blank", 1, v_pred=8, v_gt=4, tp=4),
             _slice_record("good", 0, v_pred=4, v_gt=4, tp=4),
         ]
         df = _result(records).aggregate_volumes()
-        assert np.isnan(df.loc["blank"]["dice"])
+        assert df.loc["blank"]["dice"] == pytest.approx(2 * 4 / 12)
         assert df.loc["good"]["dice"] == pytest.approx(1.0)
 
     def test_uncounted_non_empty_slice_leaves_the_volume_nan(self):

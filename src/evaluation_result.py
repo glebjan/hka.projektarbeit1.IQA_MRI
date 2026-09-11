@@ -88,27 +88,14 @@ class EvaluationResult:
         reconstructed from per-slice values at all and are deliberately left
         out rather than averaged — run again with mode="volume" for those.
 
-        A count can be missing for two different reasons, and they are not
-        interchangeable:
-
-        - The slice was skipped because the *prediction* is blank on it
-          (`is_empty` True — the flag describes the input only). Nothing was
-          measured there, so `v_pred` and `tp` are filled with 0: a blank
-          prediction really does contribute no predicted and no overlapping
-          voxels. `v_gt` is left NaN, because the reference may well be
-          occupied on exactly that slice and its voxels were never counted.
-          The volume's totals and all three ratios therefore come out NaN.
-          This is common — a slice counts as blank below ~0.1% foreground, so
-          the tapering ends of most structures qualify — and it is the honest
-          answer: filling `v_gt` with 0 would drop the reference's voxels from
-          the denominator and report a dice higher than the data supports.
-          `mode="volume"` counts the whole body at once and gets it right.
-        - The metric raised on that slice (see `IQAEvaluator`). Nothing about
-          that slice is known, so all three counts stay NaN.
-
-        Either way a warning names the affected volumes and says which case it
-        is. One incomplete volume does not invalidate the rest of the report,
-        so this never raises for that reason.
+        A count is missing only when the metric raised on that slice (see
+        `IQAEvaluator`). Nothing about the slice is known then, so all three
+        counts stay NaN and the volume's totals come out NaN; a warning names
+        the affected volumes. Slices flagged `is_empty` are blank on both
+        sides — `IQAEvaluator` only skips a slice when input and target are
+        both empty — so their counts are real zeros and are filled in as such.
+        One incomplete volume does not invalidate the rest of the report, so
+        this never raises for that reason.
 
         Returns:
             DataFrame indexed by volume id (the slice id without its `_sNNN`
@@ -139,14 +126,10 @@ class EvaluationResult:
 
         counts = df[["image_id", "is_empty", "v_pred", "v_gt", "tp"]].copy()
         counts["image_id"] = counts["image_id"].str.replace(_SLICE_SUFFIX, "", regex=True)
-        # `is_empty` describes the prediction only, so only the prediction's
-        # counts are known to be zero there. The reference's are not.
-        for col in ("v_pred", "tp"):
+        # An empty slice is blank on both sides, so every count there is 0.
+        for col in ("v_pred", "v_gt", "tp"):
             fillable = counts["is_empty"] & counts[col].isna()
             counts.loc[fillable, col] = 0.0
-        blank_prediction = set(
-            counts.loc[counts["is_empty"] & counts["v_gt"].isna(), "image_id"]
-        )
         grouped = counts.groupby("image_id")[["v_pred", "v_gt", "tp"]].sum(skipna=False)
 
         v_pred_sum = grouped["v_pred"].astype(float)
@@ -160,20 +143,7 @@ class EvaluationResult:
         grouped["vs_signed"] = np.where(denom == 0, np.nan,
                                         2.0 * (v_pred_sum - v_gt_sum) / denom)
 
-        incomplete = grouped.index[grouped[["v_pred", "v_gt", "tp"]].isna().any(axis=1)]
-        blank = [name for name in incomplete if name in blank_prediction]
-        failed = [name for name in incomplete if name not in blank_prediction]
-        if blank:
-            print(
-                "Volume-level numbers are left empty for "
-                f"{', '.join(blank)}: the prediction is blank on some of their "
-                "slices, and a per-slice run measures nothing on a blank slice, "
-                "so the reference's voxels on those slices were never counted. "
-                "The reference total is therefore unknown, and counting it as "
-                "zero would report a better score than the data supports. To "
-                'get these numbers, run again with mode="volume", which counts '
-                "the whole body in one go and needs no per-slice sum."
-            )
+        failed = list(grouped.index[grouped[["v_pred", "v_gt", "tp"]].isna().any(axis=1)])
         if failed:
             print(
                 "Volume-level numbers are incomplete for "

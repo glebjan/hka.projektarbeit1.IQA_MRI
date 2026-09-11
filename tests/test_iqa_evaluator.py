@@ -343,3 +343,26 @@ class TestScaleFieldsOnRecords:
         assert rec.normalization == "raw"
         assert rec.scale_lo is None and rec.scale_hi is None
         assert (rec.input_min, rec.input_max) == (0.0, 1.0)
+
+
+class TestFullReferenceEmptiness:
+    def test_blank_input_over_occupied_target_is_scored(self):
+        inp = _make_loader(3); tgt = _make_loader(3)
+        inp._loaded.raw[0] = 0.0
+        records = IQAEvaluator(inp, tgt, MetricRegistry(PSNR)).run_evaluation()
+        assert records[0].is_empty is False
+        assert records[0].psnr is not None
+
+    def test_blank_on_both_sides_is_empty(self):
+        inp = _make_loader(3); tgt = _make_loader(3)
+        inp._loaded.raw[0] = 0.0
+        tgt._loaded.raw[0] = 0.0
+        records = IQAEvaluator(inp, tgt, MetricRegistry(PSNR)).run_evaluation()
+        assert records[0].is_empty is True
+        assert records[0].psnr is None
+
+    def test_no_reference_still_uses_the_input_alone(self):
+        inp = _make_loader(3)
+        inp._loaded.raw[0] = 0.0
+        records = IQAEvaluator(inp, None, MetricRegistry()).run_evaluation()
+        assert records[0].is_empty is True
