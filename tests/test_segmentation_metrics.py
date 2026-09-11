@@ -278,15 +278,11 @@ class TestRawLabelMapEndToEnd:
         from image_loader import ImageLoader
         from normalization import Raw
 
-        # Multi-label mask with all of {0, 1, 2, 3} present so the old
-        # normalize-then-threshold(0.5) bug is reproducible: min-max scaling
-        # this file's own extremes (0..3) maps label 1 to 1/3 = 0.333, which
-        # falls *below* a 0.5 cutoff and is dropped into the background,
-        # while labels 2 (0.667) and 3 (1.0) survive and merge. Verified by
-        # hand: MinMax()-loading this exact file and thresholding at 0.5
-        # scores dice == 0.857, not 1.0 -- label 1's region is missing from
-        # the binarized foreground. Label 1 is the sharpest discriminator:
-        # it is the only label that lands under the cutoff after scaling.
+        # Multi-label mask spanning {0, 1, 2, 3} so a min-max scaling has the
+        # file's full [0, 3] range to compress into [0, 1]: label 1 -> 0.333
+        # (falls under a 0.5 cutoff), labels 2 -> 0.667 and 3 -> 1.0 (both
+        # clear it). Label 1's region (rows 2-3) is therefore the sharpest
+        # discriminator between Raw() and MinMax() at threshold=0.5.
         labels = np.zeros((10, 4, 1), dtype=np.int16)
         labels[0:2, :, 0] = 0
         labels[2:4, :, 0] = 1
@@ -297,19 +293,26 @@ class TestRawLabelMapEndToEnd:
 
         pred = ImageLoader(p, Raw()).tensor  # (D, 1, H, W), int16, unscaled
         assert pred.dtype == torch.int16
+        assert pred.shape == (1, 1, 10, 4)  # the (10, 4, 1) array's Z axis
+        # (size 1) becomes D; X and Y become H and W unchanged -- verified
+        # directly, not assumed: pred[0, 0] reproduces the labels array
+        # row-for-row (row index == the numpy array's first-axis index).
 
-        # Ground truth is the correct one-vs-rest answer this adapter
-        # documents for threshold=0.0: every non-zero label is foreground,
-        # including label 1's region.
-        gt = (pred != 0).float()
+        # Ground truth is written independently from the known label
+        # geometry above -- H rows 0-1 (label 0) are background, H rows 2-9
+        # (labels 1, 2, 3) are foreground -- never derived from `pred` by a
+        # transformation of it, so the assertion below can actually fail.
+        gt = torch.zeros((1, 1, 10, 4), dtype=torch.float32)
+        gt[:, :, 2:10, :] = 1.0
 
-        metric = MonaiSegmentationMetric(compute_dice, include_background=True, threshold=0.0)
+        metric = MonaiSegmentationMetric(compute_dice, include_background=True, threshold=0.5)
         scores = metric(pred, gt)
 
-        # Under the fix, pred binarizes via `value > 0.0` on its raw integer
-        # values, so labels 1, 2 and 3 all become foreground and match gt
-        # exactly. Under the old normalize-then-threshold(0.5) behaviour,
-        # label 1's region would have been scaled to 0.333 and thresholded
-        # away, so pred's foreground would be missing label 1's voxels
-        # entirely and this assertion would fail (dice < 1.0, not 1.0).
+        # threshold=0.5 is the cutoff that caused the original bug. Under
+        # Raw() (the fix), label 1 arrives as the raw integer 1, clears 0.5,
+        # and pred's foreground exactly matches gt: dice == 1.0 everywhere.
+        # Confirmed by direct substitution (see the fix report): loading the
+        # same file with MinMax() instead of Raw() scales label 1 to 0.333,
+        # which fails the 0.5 threshold and drops rows 2-3 into the
+        # background, so those slices score dice < 1.0 under that swap.
         assert scores == pytest.approx([1.0] * pred.shape[0])
