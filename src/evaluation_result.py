@@ -38,6 +38,31 @@ class EvaluationResult:
         self._images   = images
         self._registry = registry
 
+    @classmethod
+    def from_records(
+        cls,
+        records:  list[ImageEvaluatorRecord],
+        registry: MetricRegistry,
+    ) -> "EvaluationResult":
+        """Build a result from what one or more evaluators returned.
+
+        This is the public constructor for code that drives the evaluators
+        itself:
+
+            records  = build_evaluator(inp, tgt, registry).run_evaluation()
+            records += build_evaluator(inp2, tgt2, registry).run_evaluation()
+            result   = EvaluationResult.from_records(records, registry)
+
+        Args:
+            records:  a flat list — concatenate the lists of as many images as
+                      the run covered. Which image a row belongs to is already
+                      in `record.image_id`, so no grouping is needed here.
+            registry: the registry the run used. It supplies the column names
+                      of user-registered metrics, which live in `record.extra`
+                      rather than in a dedicated field.
+        """
+        return cls([_EvaluatedImage(input_path=Path(), records=records)], registry)
+
     # ------------------------------------------------------------------
     # Pure data access — no file I/O
     # ------------------------------------------------------------------

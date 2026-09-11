@@ -307,3 +307,51 @@ class TestAggregateVolumes:
         ]
         _result(records).aggregate_volumes()
         assert "bad" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# from_records
+# ---------------------------------------------------------------------------
+
+class TestFromRecords:
+    """The public way to build a result from what an evaluator returned."""
+
+    def test_records_from_one_image(self):
+        records = [
+            ImageEvaluatorRecord(image_id=f"img_s{j}", slice_index=j, psnr=30.0 + j)
+            for j in range(3)
+        ]
+        df = EvaluationResult.from_records(records, MetricRegistry(PSNR)).to_frame()
+        assert len(df) == 3
+        assert list(df["psnr"]) == [30.0, 31.0, 32.0]
+
+    def test_records_from_several_images_concatenated(self):
+        records = [
+            ImageEvaluatorRecord(image_id=f"img{i}_s{j}", slice_index=j, ssim=0.9)
+            for i in range(2)
+            for j in range(2)
+        ]
+        df = EvaluationResult.from_records(records, MetricRegistry(SSIM)).to_frame()
+        assert len(df) == 4
+        assert sorted(df["image_id"]) == ["img0_s0", "img0_s1", "img1_s0", "img1_s1"]
+
+    def test_empty_record_list_gives_empty_frame_with_columns(self):
+        df = EvaluationResult.from_records([], MetricRegistry(PSNR)).to_frame()
+        assert len(df) == 0
+        assert "psnr" in df.columns
+
+    def test_custom_metric_column_survives(self, fake_metric):
+        reg = MetricRegistry()
+        reg.register_metric("from_records_custom", fake_metric,
+                            direction="higher_is_better", reference=False)
+        record = ImageEvaluatorRecord(image_id="t_s0", slice_index=0)
+        record.extra["from_records_custom"] = 0.42
+        df = EvaluationResult.from_records([record], reg).to_frame()
+        assert df["from_records_custom"].iloc[0] == 0.42
+
+    def test_generate_report_writes_csv(self, tmp_path):
+        record = ImageEvaluatorRecord(image_id="t_s0", slice_index=0, psnr=31.5)
+        out = tmp_path / "sub" / "report.csv"
+        EvaluationResult.from_records([record], MetricRegistry(PSNR)).generate_report(out)
+        assert out.exists()
+        assert "31.5" in out.read_text()
