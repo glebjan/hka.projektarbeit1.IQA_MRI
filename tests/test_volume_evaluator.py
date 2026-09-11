@@ -150,3 +150,13 @@ class TestSliceRecordsUnchanged:
         assert len(records) == 6
         assert all(r.scoring == "slice" for r in records)
         assert records[0].slice_index == 0
+
+
+class TestScaleFieldsInVolumeMode:
+    def test_volume_row_carries_the_scale(self, nifti_volume):
+        from metrics import PSNR
+        loader = ImageLoader(nifti_volume)
+        rec = VolumeEvaluator(loader, None, MetricRegistry(PSNR)).run_evaluation()[0]
+        assert rec.normalization == "minmax"
+        assert (rec.scale_lo, rec.scale_hi) == (loader.raw_range.lo, loader.raw_range.hi)
+        assert (rec.input_min, rec.input_max) == (loader.raw_range.lo, loader.raw_range.hi)

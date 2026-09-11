@@ -19,6 +19,15 @@ class ImageEvaluatorRecord:
     scoring:             str             = "slice"
     slice_index:         Optional[int]   = 0
     is_empty:            bool            = False
+    # What [0, 1] stood for in this run (see normalization.py). In a
+    # full-reference run scale_lo/hi is the TARGET's range; input_min/max are
+    # the input's raw extremes, so input_max > scale_hi means the prediction
+    # overshot the reference and was clipped. None under the Raw strategy.
+    normalization:       Optional[str]   = None
+    scale_lo:            Optional[float] = None
+    scale_hi:            Optional[float] = None
+    input_min:           Optional[float] = None
+    input_max:           Optional[float] = None
     # Full-reference metrics (None when no target is available)
     psnr:                Optional[float] = None
     ssim:                Optional[float] = None

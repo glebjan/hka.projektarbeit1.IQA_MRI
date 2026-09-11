@@ -64,6 +64,18 @@ class IQAEvaluator:
         base = f"{strip_all_extensions(self.input.path)}_s{slice_index:03d}"
         return f"{self.source_model}/{base}" if self.source_model else base
 
+    def _scale_fields(self) -> dict[str, object]:
+        """The normalization columns of a record, read from the input loader."""
+        rng = self.input.intensity_range
+        raw = self.input.raw_range
+        return {
+            "normalization": self.input.normalizer.name,
+            "scale_lo":      None if rng is None else rng.lo,
+            "scale_hi":      None if rng is None else rng.hi,
+            "input_min":     raw.lo,
+            "input_max":     raw.hi,
+        }
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -75,6 +87,7 @@ class IQAEvaluator:
         has_target = self.target is not None
         mode       = "full_reference" if has_target else "no_reference"
 
+        scale_fields = self._scale_fields()
         records = [
             ImageEvaluatorRecord(
                 image_id=self._format_slice_id(i),
@@ -82,6 +95,7 @@ class IQAEvaluator:
                 mode=mode,
                 slice_index=i,
                 is_empty=bool(empty_mask[i].item()),
+                **scale_fields,
             )
             for i in range(D)
         ]

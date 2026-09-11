@@ -135,3 +135,22 @@ class TestDreamSimField:
     def test_not_stored_in_extra(self):
         record = ImageEvaluatorRecord(image_id="img", dreamsim=0.12)
         assert "dreamsim" not in record.extra
+
+
+class TestScaleFields:
+    NAMES = ("normalization", "scale_lo", "scale_hi", "input_min", "input_max")
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_field_defaults_to_none(self, name):
+        assert getattr(ImageEvaluatorRecord(image_id="x"), name) is None
+
+    def test_declared_right_after_is_empty(self):
+        keys = list(ImageEvaluatorRecord.__annotations__)
+        i = keys.index("is_empty")
+        assert keys[i + 1 : i + 6] == list(self.NAMES)
+
+    def test_values_survive_to_dict(self):
+        r = ImageEvaluatorRecord(image_id="x", normalization="minmax", scale_lo=0.0,
+                                 scale_hi=800.0, input_min=3.0, input_max=900.0)
+        d = r.to_dict()
+        assert d["normalization"] == "minmax" and d["scale_hi"] == 800.0 and d["input_max"] == 900.0

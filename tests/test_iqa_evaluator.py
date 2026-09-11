@@ -308,3 +308,38 @@ class TestStructuralNRMetricsEndToEnd:
             assert isinstance(record.piqe, float)
             assert isinstance(record.ilniqe, float)
             assert record.extra == {}
+
+
+class TestScaleFieldsOnRecords:
+    def _registry(self):
+        return MetricRegistry(PSNR)
+
+    def test_minmax_run_reports_its_own_range(self, synthetic_png):
+        loader = ImageLoader(synthetic_png)
+        rec = IQAEvaluator(loader, None, self._registry()).run_evaluation()[0]
+        assert rec.normalization == "minmax"
+        assert (rec.scale_lo, rec.scale_hi) == (loader.raw_range.lo, loader.raw_range.hi)
+        assert (rec.input_min, rec.input_max) == (loader.raw_range.lo, loader.raw_range.hi)
+
+    def test_full_reference_run_reports_the_targets_scale(self, tmp_path):
+        import nibabel as nib
+        from image_loader import load_pair
+        target = np.random.default_rng(0).random((16, 16, 3)) * 800
+        for name, arr in (("inp.nii", 2 * target + 500), ("tgt.nii", target)):
+            nib.save(nib.Nifti1Image(arr.astype(np.float32), np.eye(4)), str(tmp_path / name))
+        inp, tgt = load_pair(tmp_path / "inp.nii", tmp_path / "tgt.nii")
+        rec = IQAEvaluator(inp, tgt, self._registry()).run_evaluation()[0]
+        assert (rec.scale_lo, rec.scale_hi) == (tgt.raw_range.lo, tgt.raw_range.hi)
+        assert rec.input_max > rec.scale_hi          # the overshoot is visible
+        assert rec.input_min > rec.scale_lo
+
+    def test_raw_run_has_no_scale(self, tmp_path):
+        import nibabel as nib
+        from normalization import Raw
+        labels = np.zeros((8, 8, 2), dtype=np.int16); labels[:4] = 1
+        p = tmp_path / "m.nii"
+        nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p))
+        rec = IQAEvaluator(ImageLoader(p, Raw()), None, MetricRegistry()).run_evaluation()[0]
+        assert rec.normalization == "raw"
+        assert rec.scale_lo is None and rec.scale_hi is None
+        assert (rec.input_min, rec.input_max) == (0.0, 1.0)

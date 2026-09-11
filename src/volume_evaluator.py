@@ -106,6 +106,7 @@ class VolumeEvaluator(IQAEvaluator):
             scoring="volume",
             slice_index=None,
             is_empty=bool(self.input.empty_slice_mask.all().item()),
+            **self._scale_fields(),
         )
 
         for spec in self.registry.specs:
