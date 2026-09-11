@@ -1,4 +1,11 @@
-"""Image loading: format-specific decoders, ImageLoader, filename matching."""
+"""Image loading: format-specific decoders, ImageLoader, filename matching.
+
+Decoders return the raw intensities the file holds (after the steps that are
+part of decoding: DICOM rescale slope/intercept and MONOCHROME1 inversion,
+NIfTI canonical reorientation, axis transposition). How those intensities
+reach the [0, 1] every metric expects is decided per run by a
+`normalization.Normalizer`, applied lazily by `ImageLoader`.
+"""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +18,8 @@ import SimpleITK as sitk
 import torch
 from PIL import Image
 
+from normalization import FixedRange, IntensityRange, MinMax, Normalizer, scale
+
 Spacing = tuple[float, float, float]
 
 
@@ -19,20 +28,23 @@ class LoadedImage:
     """A decoded image plus the geometry the decoder knew about.
 
     Attributes:
-        tensor:        (D, 1, H, W) float32 in [0, 1].
+        raw:           (D, H, W) array in the dtype the decoder produced —
+                       uint8 for PNG/JPEG, float32 for DICOM (slope/intercept
+                       applied), the file's own dtype for NIfTI and
+                       SimpleITK formats, so an integer label map stays integer.
         spacing:       physical voxel size in millimetres, ordered to match the
-                       tensor's axes: (d_depth, d_height, d_width) for the
-                       tensor's (D, 1, H, W). The names are tensor axes, not
-                       anatomical ones — for a NIfTI transposed to (Z, X, Y),
-                       for instance, the tuple is anatomically (dz, dx, dy).
-                       None when the format carries no geometry (PNG/JPEG) or
-                       when the depth axis is not spatial.
+                       array's axes: (d_depth, d_height, d_width) for (D, H, W).
+                       The names are array axes, not anatomical ones — for a
+                       NIfTI transposed to (Z, X, Y), for instance, the tuple
+                       is anatomically (dz, dx, dy). None when the format
+                       carries no geometry (PNG/JPEG) or when the depth axis
+                       is not spatial.
         is_volumetric: True only when the depth axis is a real spatial axis with
                        more than one slice. False for 2D formats, for a single
                        slice, and for 4D NIfTI (whose depth axis mixes time and
                        space, see `_load_nifti`).
     """
-    tensor:        torch.Tensor
+    raw:           np.ndarray
     spacing:       Optional[Spacing] = None
     is_volumetric: bool = False
 
@@ -41,52 +53,9 @@ class LoadedImage:
 # Format-specific loaders
 # ---------------------------------------------------------------------------
 
-# TODO(norm-1): min-max is invariant under any affine transform, so
-#   norm(x) == norm(2*x + 500). Input and target are normalized independently,
-#   which erases every systematic brightness/contrast error between them: psnr,
-#   ssim, lpips and dists cannot penalise a generator whose output is uniformly
-#   too bright. Fix: for full-reference runs normalize both images on ONE scale
-#   (the target's), and add a metric that measures intensity fidelity explicitly
-#   so the error becomes visible instead of vanishing.
-# TODO(norm-2): min/max are rank-1/rank-n order statistics — the least robust
-#   estimators available. A single spike voxel (metal, reconstruction artefact,
-#   dead pixel) compresses everything else into a fraction of the range:
-#   [100,110,120,130,140] -> [0,.25,.5,.75,1], but with one value at 4000 ->
-#   [1,0,.0026,.0051,.0077]. Fix: clip at the 0.5/99.5 percentiles before
-#   scaling, the standard choice in medical imaging.
-# TODO(norm-5): after normalization "1.0" means a different physical quantity in
-#   every image (4095 raw units here, 800 there). psnr is defined against a
-#   data_range that is always taken as 1.0, so averaging the psnr column over a
-#   dataset averages over incommensurable scales. Fix: keep the raw (lo, hi) on
-#   LoadedImage and write it into the report so comparability stays decidable.
-# TODO(norm-6): masks go through this same function. A label map {0,1,2,3}
-#   becomes [0,.333,.667,1] and a 0.5 cutoff drops label 1 into the background
-#   while merging labels 2 and 3 — see the matching TODO in
-#   segmentation_metrics/volume.py. Fix: give ImageLoader a normalize=False /
-#   is_mask path that preserves the integer dtype.
-# TODO(norm-7): the hi == lo branch maps a constant image to zeros, so [1,1,1,1]
-#   becomes [0,0,0,0]: a fully-filled mask silently turns into an empty one
-#   (v_pred = 0, dice = 0, no error). Fix: preserve the constant value (clipped
-#   to [0,1]) and report the case instead of swallowing it.
-# TODO(norm-8): the +1e-8 makes the output range [0, (hi-lo)/(hi-lo+1e-8)]
-#   rather than exactly [0,1] — norm([0, 1e-8]) yields [0.0, 0.5]. The invariant
-#   Metric and as_mask rely on therefore only holds approximately. Fix: drop the
-#   epsilon; the `hi > lo` guard already rules out division by zero.
-# TODO(norm-10): normalization is hard-wired into the decoder and the Metric
-#   protocol fixes "float32 in [0,1]" as its contract, so a metric that WANTS to
-#   measure intensity fidelity cannot exist. Fix: inject normalization as a
-#   strategy, the same move this branch already made for `spacing` — do not
-#   discard information in the decoder, pass it on and let the consumer decide.
-def _to_normalized_channel_tensor(depth_first_array: np.ndarray) -> torch.Tensor:
-    arr = depth_first_array.astype(np.float32)
-    lo, hi = float(arr.min()), float(arr.max())
-    arr = (arr - lo) / (hi - lo + 1e-8) if hi > lo else np.zeros_like(arr)
-    return torch.from_numpy(arr).unsqueeze(1)
-
-
 def _load_pil(path: Path) -> LoadedImage:
     grayscale = np.asarray(Image.open(path).convert("L"))
-    return LoadedImage(_to_normalized_channel_tensor(grayscale[np.newaxis]))
+    return LoadedImage(grayscale[np.newaxis])
 
 
 def _dicom_array_to_depth_first(pixel_array: np.ndarray, photometric: str) -> np.ndarray:
@@ -111,12 +80,9 @@ def _load_dicom(path: Path) -> LoadedImage:
     pixel_array = _dicom_array_to_depth_first(
         dicom_dataset.pixel_array, photometric
     ).astype(np.float32)
-    # TODO(norm-9): slope/intercept are applied correctly here and then made
-    #   irrelevant again by the min-max normalization downstream. WindowCenter /
-    #   WindowWidth — the display scale the radiologist intended, and the obvious
-    #   alternative to min/max — are never read at all. Fix: offer windowing as a
-    #   normalization strategy (DICOM window when present, a fixed HU window for
-    #   CT, percentile/z-score for MR).
+    # RescaleSlope/Intercept turn stored values into the modality's units and
+    # are part of decoding. WindowCenter/WindowWidth are deliberately not read:
+    # they describe how a viewer should display the image, not what it holds.
     slope = float(getattr(dicom_dataset, "RescaleSlope", 1.0) or 1.0)
     intercept = float(getattr(dicom_dataset, "RescaleIntercept", 0.0) or 0.0)
     pixel_array = pixel_array * slope + intercept
@@ -135,7 +101,7 @@ def _load_dicom(path: Path) -> LoadedImage:
     is_cine = hasattr(dicom_dataset, "FrameTime") or hasattr(dicom_dataset, "CineRate")
     depth = int(pixel_array.shape[0])
     return LoadedImage(
-        _to_normalized_channel_tensor(pixel_array),
+        pixel_array,
         spacing,
         is_volumetric=(depth > 1 and spacing is not None and not is_cine),
     )
@@ -143,12 +109,15 @@ def _load_dicom(path: Path) -> LoadedImage:
 
 def _load_nifti(path: Path) -> LoadedImage:
     image = nib.as_closest_canonical(nib.load(str(path)))
-    data = image.get_fdata()
+    # asanyarray keeps the stored dtype (an int16 label map stays int16) and
+    # applies scl_slope/scl_inter only when the header declares them;
+    # get_fdata() would force float64 on everything.
+    data = np.asanyarray(image.dataobj)
     zooms = image.header.get_zooms()
     if data.ndim == 3:
         depth_first = np.transpose(data, (2, 0, 1))
         # zooms are (dx, dy, dz) for array axes (X, Y, Z); after the transpose
-        # the tensor axes are (Z, X, Y), so the spacing follows as (dz, dx, dy).
+        # the array axes are (Z, X, Y), so the spacing follows as (dz, dx, dy).
         spacing: Optional[Spacing] = (float(zooms[2]), float(zooms[0]), float(zooms[1]))
         volumetric = depth_first.shape[0] > 1
     elif data.ndim == 4:
@@ -159,7 +128,7 @@ def _load_nifti(path: Path) -> LoadedImage:
         volumetric = False
     else:
         raise ValueError(f"Unsupported NIfTI ndim {data.ndim} for {path}")
-    return LoadedImage(_to_normalized_channel_tensor(depth_first), spacing, volumetric)
+    return LoadedImage(depth_first, spacing, volumetric)
 
 
 def _load_sitk(path: Path) -> LoadedImage:
@@ -175,7 +144,7 @@ def _load_sitk(path: Path) -> LoadedImage:
     else:
         raise ValueError(f"Unsupported SimpleITK array shape {volume.shape} for {path}")
     return LoadedImage(
-        _to_normalized_channel_tensor(volume),
+        volume,
         spacing,
         is_volumetric=(spacing is not None and volume.shape[0] > 1),
     )
@@ -243,12 +212,23 @@ def find_matching_target(input_path: Path, targets: list[Path]) -> Optional[Path
 # ---------------------------------------------------------------------------
 
 class ImageLoader:
-    def __init__(self, path: Path):
+    """Lazy decoder plus per-run normalization.
+
+    `normalizer` decides what `[0, 1]` stands for in `.tensor`. The default,
+    `MinMax()`, scales the image's own extremes. For a full-reference pair use
+    `load_pair()`, which puts the input on the target's scale.
+    """
+
+    def __init__(self, path: Path, normalizer: Normalizer = MinMax()):
         self.path = path
         self.suffix = canonical_suffix(path)
         if self.suffix not in _LOADERS:
             raise ValueError(f"Unsupported format: {path}")
+        self.normalizer = normalizer
         self._loaded: Optional[LoadedImage] = None
+        self._tensor: Optional[torch.Tensor] = None
+        self._intensity_range: Optional[IntensityRange] = None
+        self._intensity_range_known = False
 
     @property
     def _image(self) -> LoadedImage:
@@ -257,8 +237,29 @@ class ImageLoader:
         return self._loaded
 
     @property
+    def raw(self) -> np.ndarray:
+        """The decoded (D, H, W) array, dtype as the file stored it."""
+        return self._image.raw
+
+    @property
+    def raw_range(self) -> IntensityRange:
+        """The image's own extremes, whatever the strategy."""
+        return IntensityRange(float(self.raw.min()), float(self.raw.max()))
+
+    @property
+    def intensity_range(self) -> Optional[IntensityRange]:
+        """What `[0, 1]` in `.tensor` stands for; None under `Raw`."""
+        if not self._intensity_range_known:
+            self._intensity_range = self.normalizer.range_of(self.raw)
+            self._intensity_range_known = True
+        return self._intensity_range
+
+    @property
     def tensor(self) -> torch.Tensor:
-        return self._image.tensor
+        """(D, 1, H, W); float32 in [0, 1] for every strategy but `Raw`."""
+        if self._tensor is None:
+            self._tensor = scale(self.raw, self.intensity_range, label=self.path.name).unsqueeze(1)
+        return self._tensor
 
     @property
     def spacing(self) -> Optional[Spacing]:

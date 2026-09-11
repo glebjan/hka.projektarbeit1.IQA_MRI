@@ -75,8 +75,8 @@ def _make_dicom(
 
 class TestLoadedImage:
     def test_is_a_frozen_dataclass_with_three_fields(self):
-        li = LoadedImage(tensor=torch.zeros(1, 1, 2, 2), spacing=(1.0, 2.0, 3.0), is_volumetric=True)
-        assert li.tensor.shape == (1, 1, 2, 2)
+        li = LoadedImage(raw=np.zeros((1, 2, 2), dtype="float32"), spacing=(1.0, 2.0, 3.0), is_volumetric=True)
+        assert li.raw.shape == (1, 2, 2)
         assert li.spacing == (1.0, 2.0, 3.0)
         assert li.is_volumetric is True
         with pytest.raises(Exception):
@@ -87,7 +87,7 @@ class TestPilGeometry:
     def test_png_has_no_spacing_and_is_not_volumetric(self, synthetic_png: Path):
         loaded = _load_pil(synthetic_png)
         assert isinstance(loaded, LoadedImage)
-        assert loaded.tensor.shape[0] == 1
+        assert loaded.raw.shape[0] == 1
         assert loaded.spacing is None
         assert loaded.is_volumetric is False
 
@@ -98,7 +98,7 @@ class TestNiftiGeometry:
         # header zooms are (dx, dy, dz) = (1.0, 1.5, 1.2); tensor axes are (Z, X, Y),
         # so the expected spacing is (dz, dx, dy) = (1.2, 1.0, 1.5). All three values
         # are distinct, so a transposition of any two would be caught here.
-        assert loaded.tensor.shape == (6, 1, 8, 10)
+        assert loaded.raw.shape == (6, 8, 10)
         assert loaded.spacing == pytest.approx((1.2, 1.0, 1.5))
 
     def test_3d_is_volumetric(self, nifti_volume: Path):
@@ -106,7 +106,7 @@ class TestNiftiGeometry:
 
     def test_4d_is_not_volumetric_and_has_no_spacing(self, nifti_4d: Path):
         loaded = _load_nifti(nifti_4d)
-        assert loaded.tensor.shape[0] == 6 * 3  # depth and time flattened together
+        assert loaded.raw.shape[0] == 6 * 3  # depth and time flattened together
         assert loaded.is_volumetric is False
         assert loaded.spacing is None
 
@@ -117,7 +117,7 @@ class TestSitkGeometry:
         # GetSpacing() is (x, y, z) = (0.5, 0.75, 2.0); the array is (z, y, x), so the
         # expected spacing is (2.0, 0.75, 0.5). All three values are distinct, so a
         # transposition of any two would be caught here.
-        assert loaded.tensor.shape == (6, 1, 10, 8)
+        assert loaded.raw.shape == (6, 10, 8)
         assert loaded.spacing == pytest.approx((2.0, 0.75, 0.5))
 
     def test_is_volumetric(self, sitk_volume: Path):

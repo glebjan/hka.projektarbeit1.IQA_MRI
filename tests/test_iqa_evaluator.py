@@ -1,4 +1,5 @@
 """Tests for src/iqa_evaluator.py — IQAEvaluator, batching, slice skipping."""
+import numpy as np
 import torch
 import pytest
 
@@ -6,6 +7,7 @@ from image_loader import ImageLoader, LoadedImage
 from iqa_evaluator import IQAEvaluator, BATCH_SIZE
 from metrics import (MetricRegistry, MetricSpec, ModeSupport, PSNR, SSIM,
                      FSIM, GMSD, VSI, MUSIQ, MANIQA, PAQ2PIQ, PIQE, ILNIQE)
+from normalization import MinMax
 from records import ImageEvaluatorRecord
 
 
@@ -26,7 +28,11 @@ def _make_loader(n_slices: int = 3, h: int = 64, w: int = 64) -> ImageLoader:
     loader = object.__new__(ImageLoader)
     loader.path = _FakePath()
     loader.suffix = ".png"
-    loader._loaded = LoadedImage(torch.rand(n_slices, 1, h, w))
+    loader.normalizer = MinMax()
+    loader._loaded = LoadedImage(np.random.default_rng(0).random((n_slices, h, w)).astype("float32"))
+    loader._tensor = None
+    loader._intensity_range = None
+    loader._intensity_range_known = False
     return loader
 
 
@@ -194,7 +200,7 @@ class TestRunEvaluation:
         reg = self._psnr_ssim_registry()
         loader = _make_loader(3)
         # Force first slice to be empty (constant zero tensor)
-        loader._loaded.tensor[0] = torch.zeros(1, 64, 64)
+        loader._loaded.raw[0] = 0.0
         # Verify our setup: the empty_slice_mask should flag slice 0
         assert loader.empty_slice_mask[0].item()
 
@@ -231,8 +237,12 @@ class TestRunEvaluation:
         loader = object.__new__(ImageLoader)
         loader.path = p
         loader.suffix = ".nii"
+        loader.normalizer = MinMax()
         loader._loaded = _load_nifti(p)
-        assert loader._loaded.tensor.shape[0] == n
+        loader._tensor = None
+        loader._intensity_range = None
+        loader._intensity_range_known = False
+        assert loader._loaded.raw.shape[0] == n
 
         ev = IQAEvaluator(loader, loader, reg)  # self-comparison
         records = ev.run_evaluation()

@@ -16,7 +16,6 @@ from image_loader import (
     _load_nifti,
     _load_pil,
     _load_sitk,
-    _to_normalized_channel_tensor,
     canonical_suffix,
     find_matching_target,
     is_supported,
@@ -24,33 +23,9 @@ from image_loader import (
     strip_all_extensions,
     _shared_prefix_length,
 )
+from normalization import MinMax, Percentile, Raw
 
-
-# ---------------------------------------------------------------------------
-# _to_normalized_channel_tensor
-# ---------------------------------------------------------------------------
-
-class TestToNormalizedChannelTensor:
-    def test_shape(self):
-        arr = np.random.default_rng(0).random((5, 64, 64))
-        t = _to_normalized_channel_tensor(arr)
-        assert t.shape == (5, 1, 64, 64)
-
-    def test_values_in_range(self):
-        arr = np.random.default_rng(1).random((3, 32, 32)) * 1000
-        t = _to_normalized_channel_tensor(arr)
-        assert float(t.min()) >= 0.0
-        assert float(t.max()) <= 1.0 + 1e-6
-
-    def test_constant_array_becomes_zeros(self):
-        arr = np.full((2, 16, 16), 42.0)
-        t = _to_normalized_channel_tensor(arr)
-        assert torch.all(t == 0)
-
-    def test_dtype_float32(self):
-        arr = np.random.default_rng(2).random((2, 16, 16))
-        t = _to_normalized_channel_tensor(arr)
-        assert t.dtype == torch.float32
+IMG_SIZE = 96  # must match tests/conftest.py
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +37,7 @@ class TestLoadPil:
         arr = np.random.default_rng(0).integers(0, 256, (64, 64), dtype="uint8")
         p = tmp_path / "img.png"
         Image.fromarray(arr).save(p)
-        t = _load_pil(p).tensor
+        t = ImageLoader(p).tensor
         assert t.shape == (1, 1, 64, 64)
         assert float(t.min()) >= 0.0
         assert float(t.max()) <= 1.0 + 1e-6
@@ -71,7 +46,7 @@ class TestLoadPil:
         arr = np.random.default_rng(1).integers(0, 256, (32, 32, 3), dtype="uint8")
         p = tmp_path / "rgb.png"
         Image.fromarray(arr, mode="RGB").save(p)
-        t = _load_pil(p).tensor
+        t = ImageLoader(p).tensor
         # Should be (1, 1, H, W) — grayscale
         assert t.shape == (1, 1, 32, 32)
 
@@ -154,7 +129,7 @@ class TestLoadDicom:
         arr = np.random.default_rng(0).integers(100, 2000, (64, 64), dtype=np.uint16)
         p = self._make_dicom(tmp_path / "test.dcm", arr)
         from image_loader import _load_dicom
-        t = _load_dicom(p).tensor
+        t = ImageLoader(p).tensor
         assert t.shape[1] == 1  # channel dim
         assert float(t.min()) >= 0.0
         assert float(t.max()) <= 1.0 + 1e-6
@@ -164,7 +139,7 @@ class TestLoadDicom:
         arr[:32, :] = 1000
         p = self._make_dicom(tmp_path / "m1.dcm", arr, photometric="MONOCHROME1")
         from image_loader import _load_dicom
-        t = _load_dicom(p).tensor
+        t = ImageLoader(p).tensor
         # After MONOCHROME1 inversion the originally-bright top half should now
         # have lower normalised values than the originally-dark bottom half.
         top_mean = float(t[0, 0, :32, :].mean())
@@ -182,7 +157,7 @@ class TestLoadNifti:
         img = nib.Nifti1Image(arr, np.eye(4))
         p = tmp_path / "vol.nii"
         nib.save(img, str(p))
-        t = _load_nifti(p).tensor
+        t = ImageLoader(p).tensor
         # 3D: (H, W, D) → depth_first (D, H, W) → (D, 1, H, W)
         assert t.ndim == 4
         assert t.shape[1] == 1
@@ -192,7 +167,7 @@ class TestLoadNifti:
         img = nib.Nifti1Image(arr, np.eye(4))
         p = tmp_path / "vol4d.nii"
         nib.save(img, str(p))
-        t = _load_nifti(p).tensor
+        t = ImageLoader(p).tensor
         assert t.ndim == 4
         assert t.shape[1] == 1
 
@@ -215,7 +190,7 @@ class TestLoadSitk:
         itk_img = sitk.GetImageFromArray(arr)
         p = tmp_path / "vol.mha"
         sitk.WriteImage(itk_img, str(p))
-        t = _load_sitk(p).tensor
+        t = ImageLoader(p).tensor
         assert t.ndim == 4 and t.shape[1] == 1
 
     def test_2d_mha_gets_depth_dim(self, tmp_path):
@@ -223,7 +198,7 @@ class TestLoadSitk:
         itk_img = sitk.GetImageFromArray(arr)
         p = tmp_path / "slice.mha"
         sitk.WriteImage(itk_img, str(p))
-        t = _load_sitk(p).tensor
+        t = ImageLoader(p).tensor
         assert t.shape == (1, 1, 64, 64)
 
 
@@ -356,7 +331,7 @@ class TestImageLoader:
         assert torch.equal(rgb[:, 0], rgb[:, 2])
 
     def test_empty_slice_mask_flat_image(self, tmp_path):
-        # Constant array → all values < 1e-3 after normalisation → empty
+        # Constant array → zero spread → every slice empty
         arr = np.full((64, 64), 42, dtype="uint8")
         p = tmp_path / "flat.png"
         Image.fromarray(arr).save(p)
@@ -376,3 +351,46 @@ class TestImageLoader:
         assert list(size) == list(loader.tensor.shape)
         captured = capsys.readouterr()
         assert "tensor size" in captured.out
+
+    def test_flat_image_keeps_its_value_and_warns(self, tmp_path, capsys):
+        arr = np.full((64, 64), 42, dtype="uint8")
+        p = tmp_path / "flat.png"
+        Image.fromarray(arr).save(p)
+        t = ImageLoader(p).tensor
+        assert torch.all(t == 1.0)
+        assert "flat.png" in capsys.readouterr().out
+
+    def test_raw_is_the_decoded_array(self, synthetic_png):
+        loader = ImageLoader(synthetic_png)
+        assert loader.raw.dtype == np.uint8
+        assert loader.raw.shape == (1, IMG_SIZE, IMG_SIZE)
+
+    def test_raw_range_and_intensity_range_under_minmax(self, synthetic_png):
+        loader = ImageLoader(synthetic_png)
+        assert loader.raw_range.lo == float(loader.raw.min())
+        assert loader.raw_range.hi == float(loader.raw.max())
+        assert loader.intensity_range == loader.raw_range
+
+    def test_percentile_strategy_is_applied(self, tmp_path):
+        arr = np.linspace(100, 140, 64 * 64, dtype=np.float32).reshape(64, 64)
+        arr[0, 0] = 4000.0
+        p = tmp_path / "spike.nii"
+        nib.save(nib.Nifti1Image(arr[..., np.newaxis], np.eye(4)), str(p))
+        t = ImageLoader(p, Percentile()).tensor
+        assert float(t.max()) == 1.0
+        assert float(t[0, 0, 32, 32]) == pytest.approx(0.5, abs=0.05)
+
+    def test_raw_strategy_preserves_integer_labels(self, tmp_path):
+        labels = np.zeros((8, 8, 3), dtype=np.int16)
+        labels[:4, :, 0] = 1
+        labels[4:, :, 1] = 2
+        labels[:, :4, 2] = 3
+        p = tmp_path / "labels.nii.gz"
+        nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p))
+        loader = ImageLoader(p, Raw())
+        assert loader.tensor.dtype == torch.int16
+        assert loader.intensity_range is None
+        assert sorted(torch.unique(loader.tensor).tolist()) == [0, 1, 2, 3]
+
+    def test_default_normalizer_is_minmax(self, synthetic_png):
+        assert ImageLoader(synthetic_png).normalizer == MinMax()
