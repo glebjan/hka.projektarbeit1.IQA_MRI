@@ -22,6 +22,7 @@ from image_loader import (
     list_images,
     strip_all_extensions,
     _shared_prefix_length,
+    load_pair,
 )
 from normalization import MinMax, Percentile, Raw
 
@@ -394,3 +395,54 @@ class TestImageLoader:
 
     def test_default_normalizer_is_minmax(self, synthetic_png):
         assert ImageLoader(synthetic_png).normalizer == MinMax()
+
+
+# ---------------------------------------------------------------------------
+# load_pair
+# ---------------------------------------------------------------------------
+
+def _save_nifti(path, arr):
+    nib.save(nib.Nifti1Image(arr.astype(np.float32), np.eye(4)), str(path))
+    return path
+
+
+class TestLoadPair:
+    def test_input_is_scaled_on_the_targets_range(self, tmp_path):
+        target = np.random.default_rng(0).random((16, 16, 4)) * 800
+        inp_p = _save_nifti(tmp_path / "inp.nii", 2 * target + 500)
+        tgt_p = _save_nifti(tmp_path / "tgt.nii", target)
+        inp, tgt = load_pair(inp_p, tgt_p)
+        assert inp.intensity_range == tgt.intensity_range
+        assert inp.normalizer.name == "minmax"
+
+    def test_affine_bias_is_no_longer_invisible(self, tmp_path):
+        # The regression this design fixes: under independent MinMax the two
+        # tensors were identical, so every full-reference metric saw a perfect
+        # match. On the target's scale the bias shows up as clipping.
+        target = np.random.default_rng(0).random((16, 16, 4)) * 800
+        inp_p = _save_nifti(tmp_path / "inp.nii", 2 * target + 500)
+        tgt_p = _save_nifti(tmp_path / "tgt.nii", target)
+        independent = torch.allclose(ImageLoader(inp_p).tensor, ImageLoader(tgt_p).tensor, atol=1e-6)
+        inp, tgt = load_pair(inp_p, tgt_p)
+        assert independent
+        assert not torch.allclose(inp.tensor, tgt.tensor, atol=1e-6)
+        assert float(inp.tensor.max()) == 1.0
+
+    def test_strategy_is_taken_from_the_target(self, tmp_path):
+        target = np.random.default_rng(1).random((16, 16, 4)) * 100
+        target[0, 0, 0] = 5000.0
+        inp_p = _save_nifti(tmp_path / "inp.nii", target)
+        tgt_p = _save_nifti(tmp_path / "tgt.nii", target)
+        inp, tgt = load_pair(inp_p, tgt_p, Percentile())
+        assert inp.normalizer.name == "percentile_0.5_99.5"
+        assert inp.intensity_range.hi < 5000.0
+
+    def test_raw_pair_stays_raw(self, tmp_path):
+        labels = np.zeros((8, 8, 2), dtype=np.int16); labels[:4] = 1
+        p1 = tmp_path / "a.nii"; p2 = tmp_path / "b.nii"
+        nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p1))
+        nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p2))
+        inp, tgt = load_pair(p1, p2, Raw())
+        assert inp.intensity_range is None and tgt.intensity_range is None
+        assert inp.tensor.dtype == torch.int16
+        assert inp.normalizer.name == "raw"

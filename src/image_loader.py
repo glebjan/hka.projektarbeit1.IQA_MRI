@@ -292,3 +292,26 @@ class ImageLoader:
         shape = self.tensor.shape
         print(f"[{self.path.name}] tensor size: {tuple(shape)}")
         return shape
+
+
+def load_pair(
+    input_path: Path,
+    target_path: Path,
+    normalizer: Normalizer = MinMax(),
+) -> tuple[ImageLoader, ImageLoader]:
+    """Load a full-reference pair on ONE scale — the target's.
+
+    The target is scaled by `normalizer`; the input is then scaled by the
+    range the target produced, so a prediction that is uniformly too bright
+    or too flat is measured as such instead of being normalized away
+    (fastMRI's convention: `data_range` comes from the reference). Anything
+    outside the target's range is clipped to [0, 1] in the input; the raw
+    extremes remain visible as `ImageLoader.raw_range`.
+
+    Under `Raw()` the target yields no range and the input stays raw too.
+
+    Returns `(input, target)`.
+    """
+    target = ImageLoader(target_path, normalizer)
+    inp = ImageLoader(input_path, FixedRange(target.intensity_range, name=normalizer.name))
+    return inp, target
