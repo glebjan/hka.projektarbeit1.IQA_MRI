@@ -190,7 +190,10 @@ empty = (slice.std() < 1e-3 * span) | (slice.mean() - p0.5(raw) < 1e-3 * span)
 ```
 
 Under `MinMax` on spike-free data this is the same test as today; with a spike
-it no longer collapses. `span == 0` (constant volume) marks every slice empty,
+it no longer collapses. When the percentile span is zero because the
+foreground is rarer than 0.5 % of the volume (a small lesion mask loaded with
+`Raw`), the span falls back to `max - min`, so such masks are not skipped
+wholesale. `span == 0` after that (a constant volume) marks every slice empty,
 as today.
 
 `IQAEvaluator` (slice mode) sets `is_empty = input_empty & target_empty` when a
