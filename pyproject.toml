@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iqaevaluator"
-version="0.0.1"
+dynamic = ["version"]
 description = 'A Python framework for comprehensive quality assessment of 2D images and 3D volumes. Designed for medical imaging and materials science, it bundles standard, specific, and novel metrics for segmentation as well as full- and no-reference analyses.'
 readme = "README.md"
 requires-python = ">=3.8"
