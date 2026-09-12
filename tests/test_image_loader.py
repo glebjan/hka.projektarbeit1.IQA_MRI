@@ -24,7 +24,7 @@ from image_loader import (
     _shared_prefix_length,
     load_pair,
 )
-from normalization import MinMax, Percentile, Raw
+from normalization import IntensityRange, MinMax, Percentile, Raw
 
 IMG_SIZE = 96  # must match tests/conftest.py
 
@@ -479,3 +479,21 @@ class TestLoadPair:
         assert inp.intensity_range is None and tgt.intensity_range is None
         assert inp.tensor.dtype == torch.int16
         assert inp.normalizer.name == "raw"
+
+    def test_constant_target_does_not_mislabel_a_non_constant_input(self, tmp_path, capsys):
+        # A constant target under MinMax hands the input a degenerate
+        # FixedRange(lo == hi). The input itself is not constant, so it must
+        # not be reported as one — even though it still has no meaningful
+        # scale to be measured against.
+        target = np.full((8, 8, 2), 500.0, dtype=np.float32)
+        inp = np.linspace(0.0, 100.0, 8 * 8 * 2, dtype=np.float32).reshape(8, 8, 2)
+        inp_p = _save_nifti(tmp_path / "inp.nii", inp)
+        tgt_p = _save_nifti(tmp_path / "tgt.nii", target)
+        loaded_inp, loaded_tgt = load_pair(inp_p, tgt_p)
+        loaded_inp.tensor  # trigger scale() and its warning
+        out = capsys.readouterr().out
+        assert "inp.nii" in out
+        assert "constant image" not in out   # the false claim from the bug
+        assert "not constant" in out          # the message is explicit instead
+        assert "degenerate" in out
+        assert loaded_tgt.intensity_range == IntensityRange(500.0, 500.0)

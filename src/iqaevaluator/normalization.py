@@ -56,9 +56,21 @@ def scale(
     - `rng.hi > rng.lo`: `clip((raw - lo) / (hi - lo), 0, 1)`. No epsilon — the
       guard already rules out division by zero, and an epsilon would make the
       top of the range fall short of 1.0.
-    - `rng.hi == rng.lo`: a constant image. Its value is kept (clipped to
-      [0, 1]) and a warning names the file, so a fully-filled mask stays filled
-      instead of silently becoming empty.
+    - `rng.hi < rng.lo`: an inverted range, never produced by a shipped
+      strategy (`MinMax` and `Percentile` always have `lo <= hi`; `FixedRange`
+      validates it at construction) — raises `ValueError` rather than falling
+      into the branch below and being mislabeled.
+    - `rng.hi == rng.lo` and `raw.min() == raw.max()`: a genuinely constant
+      image. Its value is kept (clipped to [0, 1]) and a warning names the
+      file, so a fully-filled mask stays filled instead of silently becoming
+      empty.
+    - `rng.hi == rng.lo` but `raw.min() != raw.max()`: the *range* collapsed
+      even though the *image* did not — e.g. a `Percentile` span whose 0.5th
+      and 99.5th percentiles both land on background, or (via `load_pair`) a
+      constant target handing its degenerate `FixedRange` to a non-constant
+      input. Calling this image "constant" would be false, so the warning
+      says the range is degenerate instead; the data is still clipped to
+      [0, 1] as-is, same as the constant-image case.
 
     `label` is only used in the warning.
     """
@@ -67,12 +79,25 @@ def scale(
     arr = np.ascontiguousarray(raw, dtype=np.float32)
     if rng.hi > rng.lo:
         arr = (arr - np.float32(rng.lo)) / np.float32(rng.hi - rng.lo)
+    elif rng.hi < rng.lo:
+        raise ValueError(
+            f"IntensityRange is inverted for [{label}]: lo={rng.lo:g} > hi={rng.hi:g}."
+        )
     else:
         kept = min(max(rng.lo, 0.0), 1.0)
-        print(
-            f"[{label}] constant image: every voxel is {rng.lo:g}. Kept as "
-            f"{kept:g} instead of scaled, so a filled mask stays filled."
-        )
+        raw_lo, raw_hi = float(raw.min()), float(raw.max())
+        if raw_lo == raw_hi:
+            print(
+                f"[{label}] constant image: every voxel is {rng.lo:g}. Kept as "
+                f"{kept:g} instead of scaled, so a filled mask stays filled."
+            )
+        else:
+            print(
+                f"[{label}] degenerate range: the scale collapsed to {rng.lo:g} "
+                f"although the image is not constant (raw min {raw_lo:g}, max "
+                f"{raw_hi:g}). Values are clipped to [0, 1] as-is instead of "
+                f"scaled."
+            )
     return torch.from_numpy(np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False))
 
 
@@ -94,6 +119,14 @@ class Percentile:
     full-reference run the percentiles are taken from the target and applied
     to both images (see `image_loader.load_pair`), so the prediction's own
     overshoot is clipped against the reference's scale, not hidden.
+
+    When the foreground is rarer than `lower`/`upper` allow for — a small ROI
+    or lesion mask in a large field of view, or a heavily zero-padded volume —
+    both percentiles land on background and the span collapses to zero even
+    though the image itself is far from constant. `range_of` then falls back
+    to the image's own extremes, mirroring the same fallback in
+    `ImageLoader.empty_slice_mask`; a real but sparse image is scaled, not
+    binarized.
     """
     lower: float = 0.5
     upper: float = 99.5
@@ -110,8 +143,10 @@ class Percentile:
         return f"percentile_{self.lower:g}_{self.upper:g}"
 
     def range_of(self, raw: np.ndarray) -> Optional[IntensityRange]:
-        lo, hi = np.percentile(raw, [self.lower, self.upper])
-        return IntensityRange(float(lo), float(hi))
+        lo, hi = (float(v) for v in np.percentile(raw, [self.lower, self.upper]))
+        if hi <= lo:
+            lo, hi = float(raw.min()), float(raw.max())
+        return IntensityRange(lo, hi)
 
 
 @dataclass(frozen=True)

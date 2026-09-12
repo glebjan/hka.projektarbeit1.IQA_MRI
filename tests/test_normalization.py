@@ -38,6 +38,25 @@ class TestScale:
         raw = np.zeros((1, 3, 3), dtype=np.float32)
         assert torch.all(scale(raw, IntensityRange(0.0, 0.0)) == 0.0)
 
+    def test_degenerate_range_on_a_real_image_warns_without_calling_it_constant(self, capsys):
+        # A degenerate (lo == hi) range can arrive at scale() for an image
+        # that is not constant — e.g. via a Percentile span that collapsed
+        # before its own fallback (defense in depth), or via `load_pair`
+        # handing a constant target's degenerate FixedRange to a non-constant
+        # input. Either way, calling the image "constant" would be false.
+        raw = np.array([[[1.0, 2.0, 3.0]]], dtype=np.float32)
+        scale(raw, IntensityRange(5.0, 5.0), label="inp.nii")
+        out = capsys.readouterr().out
+        assert "inp.nii" in out
+        assert "constant image" not in out   # the false claim from the bug
+        assert "not constant" in out          # the message is explicit instead
+        assert "degenerate" in out
+
+    def test_inverted_range_raises(self):
+        raw = np.array([[[1.0, 2.0]]], dtype=np.float32)
+        with pytest.raises(ValueError):
+            scale(raw, IntensityRange(10.0, 0.0))
+
     def test_none_range_preserves_dtype_and_values(self):
         raw = np.array([[[0, 1, 2, 3]]], dtype=np.int16)
         t = scale(raw, None)
@@ -78,6 +97,29 @@ class TestPercentile:
     def test_name_encodes_the_percentiles(self):
         assert Percentile().name == "percentile_0.5_99.5"
         assert Percentile(1, 99).name == "percentile_1_99"
+
+    def test_sparse_foreground_falls_back_to_extremes_instead_of_collapsing(self):
+        # A blob small enough that both the 0.5th and 99.5th percentiles land
+        # on background: the naive percentile span is zero even though the
+        # image is far from constant (a small ROI, a lesion mask, a heavily
+        # zero-padded volume). range_of must not report a degenerate span for
+        # a real image — scale() would otherwise binarize it.
+        raw = np.zeros((4, 64, 64), dtype=np.float32)
+        raw[0, :3, :3] = 900.0  # 9 bright voxels out of 16384 (~0.05 %)
+        rng = Percentile().range_of(raw)
+        assert rng == IntensityRange(0.0, 900.0)
+
+    def test_sparse_foreground_is_scaled_not_binarized(self):
+        raw = np.zeros((4, 64, 64), dtype=np.float32)
+        raw[0, 0, 0:3] = [500.0, 700.0, 900.0]
+        raw[0, 1, 0:3] = [600.0, 800.0, 850.0]
+        raw[0, 2, 0:3] = [550.0, 650.0, 750.0]
+        t = scale(raw, Percentile().range_of(raw), label="sparse.nii")
+        values = sorted(set(round(v, 3) for v in t[0, :3, :3].flatten().tolist()))
+        # Graded intensities (500..900) must stay graded, not collapse to 1.0.
+        assert len(values) > 2
+        assert float(t[0, 0, 2]) == 1.0            # the true max still hits 1.0
+        assert 0.0 < float(t[0, 0, 0]) < 1.0        # 500 is scaled, not clipped whole
 
     @pytest.mark.parametrize("lower,upper", [(99.5, 0.5), (50, 50), (-1, 99), (0, 101)])
     def test_invalid_bounds_raise(self, lower, upper):
