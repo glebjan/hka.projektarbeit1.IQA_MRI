@@ -85,7 +85,9 @@ import torch
 from iqaevaluator.evaluation_result import EvaluationResult
 from iqaevaluator.evaluator_factory import build_evaluator
 from iqaevaluator.image_loader import ImageLoader, load_pair
-from iqaevaluator.metrics import PSNR, SSIM, MetricRegistry
+from iqaevaluator.metrics import LPIPS, PSNR, SSIM, MetricRegistry
+from iqaevaluator.segmentation_metrics.monai_metrics import DICE
+from iqaevaluator.segmentation_metrics.volume_metrics import VS, VS_SIGNED
 from iqaevaluator.normalization import MinMax, Percentile, Raw
 from iqaevaluator.dreamsim_metric import dreamsim_spec
 
@@ -168,10 +170,24 @@ df.to_csv(csv_path, index=False)
 print(csv_path.read_text().splitlines()[0])
 
 block("select-skips")
-selected, skipped = registry.select("volume")
+# PSNR and SSIM have a volume implementation; LPIPS does not — that is the point.
+selected, skipped = MetricRegistry(PSNR, SSIM, LPIPS).select("volume")
 print("selected:", [s.name for s in selected])
 for s in skipped:
     print(f"skipped: {s.name} — {s.reason}")
+
+block("aggregate-volumes")
+mask_gt = (base > base.mean()).astype(np.uint8)
+mask_pred = (noisy > base.mean()).astype(np.uint8)
+gt_p, pred_p = TMP / "gt.nii.gz", TMP / "pred.nii.gz"
+nib.save(nib.Nifti1Image(mask_gt, np.eye(4)), gt_p)
+nib.save(nib.Nifti1Image(mask_pred, np.eye(4)), pred_p)
+seg = MetricRegistry(DICE, VS, VS_SIGNED)
+seg_records = build_evaluator(
+    ImageLoader(pred_p, Raw()), ImageLoader(gt_p, Raw()), seg, mode="slice"
+).run_evaluation()
+seg_result = EvaluationResult.from_records(seg_records, seg)
+print(seg_result.aggregate_volumes().to_string())
 
 block("dreamsim-names")
 print(dreamsim_spec().name)
@@ -181,7 +197,8 @@ print(dreamsim_spec(normalize_embeds=False).name)
 
 block("raw-mask")
 mask = (base > base.mean()).astype(np.uint8)
-mask_p = write_volume(TMP / "mask.nii.gz", mask)
+mask_p = TMP / "mask.nii.gz"
+nib.save(nib.Nifti1Image(mask, np.eye(4)), mask_p)   # uint8 on disk, NOT cast to float32
 print("Raw():   dtype", ImageLoader(mask_p, Raw()).tensor.dtype, "unique", torch.unique(ImageLoader(mask_p, Raw()).tensor).tolist())
 print("MinMax():dtype", ImageLoader(mask_p, MinMax()).tensor.dtype, "unique", torch.unique(ImageLoader(mask_p, MinMax()).tensor).tolist())
 ```
