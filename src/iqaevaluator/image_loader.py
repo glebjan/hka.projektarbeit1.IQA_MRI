@@ -256,7 +256,7 @@ class ImageLoader:
 
     @property
     def tensor(self) -> torch.Tensor:
-        """(D, 1, H, W); float32 in [0, 1] for every strategy but `Raw`."""
+        """(D, 1, H, W); float32 in [0, 1] under every strategy except `Raw()` and `FixedRange(None)`, which leave the data unscaled."""
         if self._tensor is None:
             self._tensor = scale(self.raw, self.intensity_range, label=self.path.name).unsqueeze(1)
         return self._tensor
