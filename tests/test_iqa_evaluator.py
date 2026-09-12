@@ -333,6 +333,32 @@ class TestScaleFieldsOnRecords:
         assert rec.input_max > rec.scale_hi          # the overshoot is visible
         assert rec.input_min > rec.scale_lo
 
+    def test_affine_bias_scores_finite_and_non_perfect_under_load_pair(self, tmp_path):
+        # The spec's score-level regression test (§Testing): independent
+        # min-max scaling is invariant under any affine transform, so
+        # norm(x) == norm(2 * x + 500) and psnr used to score a uniformly
+        # too-bright generator as a perfect match. `load_pair` shares one
+        # scale (the target's) so the bias becomes visible; loading the same
+        # pair independently must reproduce the old bug's signature instead,
+        # pinning both halves of the behaviour rather than just the new one.
+        import math
+        import nibabel as nib
+        from image_loader import load_pair
+        target = np.random.default_rng(0).random((16, 16, 3)) * 800
+        inp_p, tgt_p = tmp_path / "inp.nii", tmp_path / "tgt.nii"
+        for path, arr in ((inp_p, 2 * target + 500), (tgt_p, target)):
+            nib.save(nib.Nifti1Image(arr.astype(np.float32), np.eye(4)), str(path))
+
+        paired_inp, paired_tgt = load_pair(inp_p, tgt_p)
+        paired_rec = IQAEvaluator(paired_inp, paired_tgt, self._registry()).run_evaluation()[0]
+        assert math.isfinite(paired_rec.psnr)
+        assert paired_rec.psnr < 20.0   # far below a near-identical pair's score
+
+        independent_rec = IQAEvaluator(
+            ImageLoader(inp_p), ImageLoader(tgt_p), self._registry()
+        ).run_evaluation()[0]
+        assert independent_rec.psnr > 60.0   # the old bug: scored as a perfect match
+
     def test_raw_run_has_no_scale(self, tmp_path):
         import nibabel as nib
         from normalization import Raw
