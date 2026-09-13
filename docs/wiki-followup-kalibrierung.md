@@ -45,6 +45,8 @@
    `as_mask`) behalten `label`/`threshold` als Standalone-Utilities; `as_mask`
    verwendet dieselbe Regel wie `Mask()` (Nicht-Null = Vordergrund bei
    `label=None`).
+   `match_threshold` heißt korrekt `match_iou_threshold`. Ein `threshold=`/
+   `label=`-Argument an irgendeinen Builder wirft `TypeError`.
 
 6. **Leere Slices bei Masken-Runs:** unter `Mask()` gilt ein Slice als leer
    genau dann, wenn er null Vordergrund-Voxel hat (exakte Zählung, keine
@@ -67,12 +69,19 @@
 9. **Panoptic Quality und `Raw()`:** Multi-Instanz-PQ braucht ganzzahlige
    Instanz-IDs — dafür bleibt `Raw()` der richtige Loader. Unter `Mask()` ist PQ
    ein Ein-Instanz-PQ (Vordergrund = eine Instanz).
+   Der `panopticapi`-Vergleich kodiert den Hintergrund als Stuff-Segment
+   (eigene Kategorie, `isthing=0`) und mittelt nur über Things — als VOID (0)
+   ignoriert panopticapi FP-Instanzen auf dem Hintergrund und liefert 0.5
+   statt 0.3 auf F4.
 
 10. **Kalibrierung — drei Schichten** (neue Wiki-Seite „Calibration"):
     1. Handwert nach Paper-Definition auf kleinem Fixture, Herleitung im Test
        (`tests/calibration/cases.py`) — vom Menschen geprüft.
     2. Offizielle Implementierung derselben Definitionsvariante (MedPy für
        Dice/ASSD, `panopticapi` für PQ, `boundary-iou-api` für 2D-Boundary-IoU).
+       `boundary-iou-api` ist nicht als Paket installierbar (leeres
+       Top-Level-Paket, ungepinnte panopticapi-URL); `mask_to_boundary` ist in
+       `tests/calibration/official.py` vendored (BSD-2, SHA 37d2558).
     3. MONAI-eigene Testfälle (1.6.0) durch Loader + Adapter — beweist, dass die
        Adapter `percentile`, `symmetric`, `class_thresholds`, `spacing` (D,H,W)
        unverfälscht durchreichen.
@@ -94,9 +103,14 @@
 12. **Testbefehl und Umgebung:** Tests laufen nur noch im Calibration-Env:
     `hatch env create calibration && hatch run calibration:test`. Das
     Laufzeit-Venv `.venv` enthält kein pytest mehr; das sdist enthält kein
-    `tests/`. Optionale Extras `[calibration]` (surface-distance, medpy,
-    panopticapi@sha, boundary-iou-api@sha).
+    `tests/`. Optionale Extras `[calibration]` (surface-distance==0.1,
+    medpy==0.5.2, panopticapi@7bb4655).
+    pyiqa deklariert pytest/ruff/pre-commit/yapf/tensorboard selbst als
+    Laufzeit-Abhängigkeiten — sie bleiben in `.venv` transitiv installiert;
+    entfernt sind nur unsere direkten Pins und `tests/` aus dem sdist.
 
 ## Noch offen (wird ergänzt)
 
 - Sub-Projekte B (Intensitätsmetriken) und C (Loader/Normalisierung).
+- `docs/calibration/segmentation.md` ist generiert und committed — im Wiki
+  verlinken, nicht kopieren.
