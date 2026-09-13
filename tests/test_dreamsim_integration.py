@@ -3,12 +3,9 @@
 Skipped unless the package is installed AND weights are already cached, so a
 normal test run never triggers a ~1 GB download. Populate the cache with:
 
-    .venv/bin/python -c "import iqaevaluator.metrics; \
-from iqaevaluator.dreamsim_metric import DREAMSIM; import torch; \
-m = DREAMSIM.slice_mode.factory(); print(m(torch.rand(1,3,96,96), torch.rand(1,3,96,96)))"
-
-`metrics` has to be imported first: it and dreamsim_metric form the same
-deliberate import cycle the segmentation_metrics modules use.
+    .venv/bin/python -c "from iqaevaluator.dreamsim_metric import DREAMSIM; \
+import torch; m = DREAMSIM.slice_mode.factory(); \
+print(m(torch.rand(1,3,96,96), torch.rand(1,3,96,96)))"
 """
 import pytest
 import torch
@@ -16,7 +13,6 @@ import torch
 pytest.importorskip("dreamsim")
 
 from iqaevaluator.constants import DREAMSIM_CACHE
-import iqaevaluator.metrics  # noqa: F401 — must precede dreamsim_metric; see the cycle note there
 from iqaevaluator.dreamsim_metric import dreamsim_spec
 
 pytestmark = pytest.mark.skipif(
