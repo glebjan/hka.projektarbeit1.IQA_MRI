@@ -41,3 +41,6 @@ tests/**/*.pyd
 # Claude Code settings
 !.claude/
 !.claude/settings.json
+
+# GitHub wiki clone (separate repo)
+docs/wiki/

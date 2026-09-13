@@ -34,15 +34,15 @@ Calibration here means three things, in this order of authority:
 
 | # | Decision | Alternative rejected |
 |---|---|---|
-| D1 | One foreground policy, decided at the loader: new `Mask()` normalizer. `Raw()` stays as an escape hatch (dtype preserved) but is no longer valid input for segmentation metrics. | Extending `Raw(label=...)` — mixes "unscaled" with "binarized"; 0/255 PNG stays a special case. |
+| D1 | One foreground policy, decided at the loader: new `Mask()` normalizer. `Raw()` stays as an escape hatch (dtype preserved) but is no longer valid input for the binary segmentation metrics (PQ keeps accepting `Raw()` instance maps, see Part 2). | Extending `Raw(label=...)` — mixes "unscaled" with "binarized"; 0/255 PNG stays a special case. |
 | D2 | Under `Mask()`, a slice is empty iff it has zero foreground voxels (exact count). Skip only when input **and** target are empty. Volume mode does not set `is_empty` at all. | All-false `empty_slices` (every slice scored, `None` noise); a run flag `skip_empty=False` (second knob to forget). |
-| D3 | Empty-mask policy: one side empty → Dice/VS/NSD/PQ/Boundary-IoU 0.0, HD95/ASSD `None`; both empty → `None` everywhere. `inf`/`NaN` never reach the CSV. | Both empty → 1.0 (Metrics Reloaded, Maier-Hein 2024): inflates means over many empty cases. |
+| D3 | Empty-mask policy: one side empty → Dice/VS/NSD/PQ/Boundary-IoU 0.0, HD95/ASSD `None`; both empty → `None` everywhere. `inf`/`NaN` never reach the CSV. Counts (`v_pred`, `v_gt`, `tp`) and `vs_signed` are not scores and get no policy: one side empty → real counts and ±2.0; both empty → counts 0.0, `vs`/`vs_signed` `None` (NaN → None, as today). | Both empty → 1.0 (Metrics Reloaded, Maier-Hein 2024): inflates means over many empty cases. |
 | D4 | Boundary-IoU physical band floor = `max(spacing)` (at least one voxel in every direction), was 1.0 mm. | Voxel-mode only in 3D — loses the anisotropy correction. |
 | D5 | `threshold`/`label` removed from every spec builder and adapter. Domain parameters stay (`**monai_kwargs`). Numpy functions keep `label`/`threshold` as standalone utilities; `as_mask` becomes the single binarization rule. | Keep knobs with a no-op default — four paths remain. |
 | D6 | One label per run: `Mask(label=k)`. No one-hot / multi-channel path through the loader. | One-hot channels — complicates every adapter for a case nobody asked for. |
 | D7 | `Normalizer` protocol gains `apply()` and `empty_slices()`; the loader no longer knows strategy semantics. | `is_mask` flag + `isinstance` branches in the loader. |
-| D8 | Official reference packages as optional deps, run in a separate Hatch env `calibration` with its own venv. Git dependencies pinned to a SHA. | Vendoring core functions — "copied" is weaker than "imported". |
-| D9 | Test suite as a whole moves out of the runtime install: dev tools out of `[project.dependencies]`, `tests/` out of the sdist, single test command `hatch run calibration:test`. | — (user requirement: users must not pay for tests in disk space) |
+| D8 | Official reference packages as optional deps, run in a separate Hatch env `calibration` with its own venv. Git dependencies pinned to a SHA. One forced exception: `boundary-iou-api` cannot be installed as a dependency — its `setup.py` ships only the empty top-level package (no `boundary_iou.utils`) and pins `panopticapi` to an unpinned `archive/master.zip` URL that conflicts with any SHA pin (both verified with uv on Python 3.14) — so its 20-line `mask_to_boundary` is vendored verbatim (BSD-2-Clause, copyright header, source SHA) in `tests/calibration/official.py`. | Vendoring core functions — "copied" is weaker than "imported". |
+| D9 | Test suite as a whole moves out of the runtime install: dev tools out of `[project.dependencies]`, `tests/` out of the sdist, single test command `hatch run calibration:test`. Caveat: pyiqa 0.1.15.post2 itself declares pytest, ruff, pre-commit, tensorboard and yapf as runtime dependencies, so they stay installed in `.venv` transitively; what D9 removes is our direct pins and the `tests/` tree. | — (user requirement: users must not pay for tests in disk space) |
 | D10 | Framework follows the MONAI variant of each definition (voxel-based surfaces, HD95 = max of directed 95th percentiles — Taha & Hanbury 2015). Divergent official variants appear in the report as extra columns with an explanation. | Switching to `surface-distance` (area-weighted) semantics — MONAI backend would no longer match. |
 
 ## Part 0 — Test suite → calibration environment (D8, D9)
@@ -62,17 +62,17 @@ Runs first, own commit; everything after is verified with
 - `[project.optional-dependencies]`:
   ```toml
   calibration = [
-    "surface-distance==0.1",   # DeepMind; Nikolov et al. — NSD (author implementation), HD, ASSD (area-weighted variant)
-    "medpy==0.5.2",            # Dice, HD95 (concatenated variant), ASSD (voxel variant)
-    "panopticapi @ git+https://github.com/cocodataset/panopticapi.git@<sha>",
-    "boundary-iou-api @ git+https://github.com/bowenc0221/boundary-iou-api.git@<sha>",
+    "surface-distance==0.1",   # DeepMind's own PyPI upload (author DeepMind, homepage deepmind/surface-distance); Nikolov et al. — NSD (author implementation), HD, ASSD (area-weighted variant)
+    "medpy==0.5.2",            # Dice, HD, HD95 (concatenated variant), ASSD (voxel variant); sdist only, builds on Python 3.14 / numpy 2.5.3 (verified)
+    "panopticapi @ git+https://github.com/cocodataset/panopticapi.git@7bb4655548f98f3fedc07bf37e9040a992b054b0",
   ]
   ```
-  with `[tool.hatch.metadata] allow-direct-references = true`. SHAs are the
-  respective default-branch heads at implementation time and are recorded in
-  the calibration report.
+  with `[tool.hatch.metadata] allow-direct-references = true`. The SHA is the
+  master head on 2026-09-13 and is recorded in the calibration report.
+  `boundary-iou-api` is deliberately absent (D8): `mask_to_boundary` is
+  vendored in `official.py` from SHA `37d25586a677b043ed585f10e5c42d4e80176ea9`.
 - `[tool.hatch.envs.calibration]`: `path = ".venv-calibration"`,
-  `installer = "uv"`, `features = ["calibration"]`, `dependencies = [pytest==9.1.1, ruff==0.16.6, …]`
+  `installer = "uv"`, `features = ["calibration"]`, `dependencies = ["pytest==9.1.1", "ruff==0.16.6", …]`
   (the dev tools removed above, same pins). Scripts:
   `test = "pytest {args:tests}"`, `report = "python tests/calibration/report.py"`.
 - `[tool.hatch.envs.default.scripts]`: `test` removed. `evaluate` stays.
@@ -85,7 +85,8 @@ the runtime install works without dev tools.
 Docs: `CLAUDE.md` (test command, env layout), `README.md`.
 
 Verification: `hatch env create calibration && hatch run calibration:test`
-→ all tests pass; `uv pip list` in `.venv` shows no pytest; `hatch build -t sdist`
+→ all tests pass; `uv pip tree --invert --package pytest` in `.venv` names pyiqa
+as the only parent (iqaevaluator no longer appears); `hatch build -t sdist`
 contains no `tests/`.
 
 ## Part 1 — `Mask()` and the `Normalizer` protocol (D1, D2, D6, D7)
@@ -97,12 +98,15 @@ contains no `tests/`.
 class Normalizer(Protocol):
     name: str
     def range_of(self, raw: np.ndarray) -> Optional[IntensityRange]: ...
-    def apply(self, raw: np.ndarray, *, label: str) -> torch.Tensor: ...   # (D, H, W) float32
+    def apply(self, raw: np.ndarray, *, source: str) -> torch.Tensor: ...  # (D, H, W) float32; `source` = file name for messages
     def empty_slices(self, raw: np.ndarray) -> torch.Tensor: ...           # (D,) bool
 ```
 
+- The kwarg is `source`, not `label`: `Mask(label=k)` already uses `label` for
+  the class id. `scale()` keeps its `label=` parameter; `apply` passes `source`
+  through to it.
 - `MinMax`, `Percentile`, `FixedRange`, `Raw`: `apply` returns
-  `scale(raw, self.range_of(raw), label=label)` — unchanged mapping.
+  `scale(raw, self.range_of(raw), label=source)` — unchanged mapping.
   `empty_slices` returns `sparse_slices(raw)`, a module function holding the
   heuristic currently in `ImageLoader.empty_slice_mask` verbatim (std and lift
   tests against a `Percentile().range_of` span, extremes fallback). Behaviour
@@ -112,12 +116,13 @@ class Normalizer(Protocol):
   `apply` → `as_mask(raw, label, threshold)` as float32 `{0.0, 1.0}`.
   `empty_slices` → `apply(raw).sum(dim=(1, 2)) == 0`. A float map outside
   [0, 1] raises `ValueError` naming the file (re-raised from `as_mask` with
-  `label` prepended).
+  `source` prepended).
 - `NORMALIZER_NAMES["mask"] = Mask`; CLI `--normalization mask`.
   `Mask(label=k)` is API-only (no CLI label parser).
 - Module docstring: strategy list gains `Mask()`; `Raw()` is described as the
   escape hatch for instance maps (PQ) and anything else that must keep its
-  dtype.
+  dtype. `Percentile`'s docstring points at `ImageLoader.empty_slice_mask` for
+  the shared sparse-foreground fallback — repoint it at `sparse_slices`.
 
 `src/iqaevaluator/segmentation_metrics/volume.py`:
 
@@ -128,7 +133,7 @@ class Normalizer(Protocol):
 
 `src/iqaevaluator/image_loader.py`:
 
-- `tensor` → `self.normalizer.apply(self.raw, label=self.path.name).unsqueeze(1)`.
+- `tensor` → `self.normalizer.apply(self.raw, source=self.path.name).unsqueeze(1)`.
 - `empty_slice_mask` → `self.normalizer.empty_slices(self.raw)`.
 - Docstrings: "float32 in [0, 1] under every strategy except `Raw()`;
   exactly {0, 1} under `Mask()`".
@@ -236,7 +241,9 @@ Import cycle (review 1.2): `MetricSpec`, `ModeSupport`, `ModeUnsupported`,
 `src/iqaevaluator/metric_spec.py`; `metrics.py` re-exports them so every
 existing `from iqaevaluator.metrics import MetricSpec` keeps working, and its
 bottom imports become normal top imports. This is in scope because Part 2
-touches every segmentation module's imports anyway.
+touches every segmentation module's imports anyway. `image_loader.py` imports
+`Spacing` from `metric_spec` as well and drops its duplicate alias (which only
+existed because `metrics.py` could not import `image_loader`).
 
 Cross-check (review 2.5): `tests/test_volume_metrics.py::TestCrossCheck` gains
 a `{0,1,2}` label-map case under `Mask(label=2)`: volume-mode Dice ==
@@ -261,7 +268,7 @@ Unit tests (`tests/test_segmentation_metrics.py`, `test_volume_metrics.py`,
 tests/calibration/
   __init__.py
   cases.py                        # CalibrationCase records: fixture, hand value, derivation, source
-  official.py                     # adapters: surface-distance, medpy, panopticapi, boundary-iou-api
+  official.py                     # adapters: surface-distance, medpy, panopticapi; vendored mask_to_boundary (boundary-iou-api, BSD-2)
   monai_cases.py                  # fixtures + expected values copied from MONAI 1.6.0 tests (Apache-2.0 header)
   test_hand.py                    # framework == hand value            (no extras needed)
   test_official.py                # framework == official, same variant (importorskip)
@@ -297,7 +304,13 @@ committed.
 | ASSD | mean over the concatenated directed surface-voxel distances | MedPy `assd` | `surface-distance` `compute_average_surface_distance` (area-weighted, returns both directions) |
 | NSD | (|S_gt within τ| + |S_pred within τ|) / (|S_gt| + |S_pred|) over surface voxels — MONAI | — | `surface-distance` `compute_surface_dice_at_tolerance` (author implementation, area-weighted) |
 | PQ | Kirillov 2019 Eq. 1, IoU match > 0.5 | `panopticapi` `pq_compute` | — |
-| Boundary IoU | Cheng 2021, band = mask ∖ erode(mask, d) | `boundary-iou-api` (2D) | — (3D physical mode is this framework's extension; hand value only) |
+| HD (percentile None) | max over both directed maxima of surface-voxel distances | MedPy `hd` — via `hausdorff95_metric(percentile=None)` | — |
+| Boundary IoU | Cheng 2021, band = mask ∖ erode(mask, d) | vendored `mask_to_boundary` from `boundary-iou-api` (2D, cv2 erosion) | — (3D physical mode is this framework's extension; hand value only) |
+
+Verified on F1/F2 with the installed packages: MedPy `dc`/`assd`/`asd`/`hd`
+reproduce every MONAI value; `surface-distance` diverges as expected (F1 ASD
+0.188 vs 0.1667, F2 NSD 0.9894 vs 0.9912) — those numbers land in the report's
+divergent columns, never in an equality assertion.
 
 ### Fixtures and hand values
 
@@ -353,7 +366,15 @@ each). Pred: instance 1 = `[0:4, 1:5]` (overlap 12, union 20, IoU 0.6 → matche
 since > 0.5), no counterpart for GT 2 (FN), instance 3 = `[12:16, 0:4]` (no
 overlap, FP). Kirillov et al. 2019, Eq. 1:
 PQ = Σ_TP IoU / (|TP| + ½|FP| + ½|FN|) = 0.6 / (1 + 0.5 + 0.5) = **0.3**
-(SQ = 0.6, RQ = 0.5).
+(SQ = 0.6, RQ = 0.5). MONAI adds `smooth_numerator=1e-6` to the denominator,
+so the framework reports 0.29999986: the case carries `tolerance=1e-6` and
+the derivation names the term. The `panopticapi` adapter writes both maps as
+`id2rgb` PNGs into a temporary directory and calls `pq_compute_single_core`
+with a two-category set; background must be encoded as a **stuff** segment
+(own id, category `isthing=0`) in both maps and PQ read from
+`PQStat.pq_average(categories, isthing=True)`. Left as VOID (0), panopticapi
+ignores the false-positive instance and removes VOID pixels from the matched
+union, giving 0.5 instead of 0.3 (verified).
 
 **F5 — Boundary IoU, physical band.** Volume `(8, 40, 40)`, spacing (D,H,W) =
 (3, 1, 1). GT = `[2:6, 8:32, 8:32]` (4·24·24 = 2304 voxels). Pred_D =
@@ -410,6 +431,19 @@ Apache-2.0 header and MONAI version noted. One-sided-empty cases (MONAI
 expects `inf`) are asserted as `None` per D3 and marked as such in the file.
 These prove the adapter passes `percentile`, `directed`, `symmetric`,
 `class_thresholds` and `spacing` (in (D, H, W) order) through unchanged.
+Reading the expected lists: `test_hausdorff_distance.py` expands each case
+over `product(["euclidean", "chessboard", "taxicab"], [directed=True,
+directed=False])`, so the framework's value (euclidean, undirected) is index 1;
+`test_surface_distance.py` lists `[symmetric=True, symmetric=False]`, so ASSD
+is index 0. MONAI runs these with `include_background=False` on a mask
+repeated over three channels, which equals one channel with
+`include_background=True`. Cases without a percentile use
+`hausdorff95_metric(percentile=None)`. Known deviations, each asserted per D3
+and marked in the file: MONAI 1.6.0 returns `nan` (not `inf`) for one-sided
+HD at percentile 95 and `inf` at percentile None, `inf` for one-sided ASSD,
+1.0 for both-empty Dice with `ignore_empty=False` (its TEST_CASE_11).
+`test_compute_meandice.py`'s tiny 2×2 cases go through the loader as 2D
+files (slice mode).
 
 ### Acceptance (mutation checks)
 
