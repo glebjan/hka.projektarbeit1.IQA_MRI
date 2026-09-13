@@ -42,7 +42,7 @@ import torch
 from scipy.ndimage import distance_transform_cdt, distance_transform_edt
 
 from iqaevaluator.metric_spec import MetricSpec, ModeSupport
-from iqaevaluator.segmentation_metrics.volume import as_mask, require_binary
+from iqaevaluator.segmentation_metrics.volume import as_mask, require_binary, require_single_channel
 
 DEFAULT_DILATION_RATIO = 0.02
 """Paper default: boundary band width as a fraction of the image diagonal."""
@@ -205,7 +205,8 @@ class BoundaryIoUMetric:
     and returns one score per sample. Input must be binary — load masks with
     `normalization.Mask()` (`Mask(label=k)` selects one class of a label
     map). Both masks empty → the score is undefined and comes back as `None`;
-    one mask empty → 0.0.
+    one mask empty → 0.0. There is no one-hot / multi-channel path: a
+    multi-channel `(N, C>1, ...)` batch is rejected with a `ValueError`.
 
     Args:
         dilation_ratio: boundary band width as a fraction of the image diagonal.
@@ -233,6 +234,8 @@ class BoundaryIoUMetric:
             )
         require_binary(input, metric="boundary_iou")
         require_binary(target, metric="boundary_iou")
+        require_single_channel(input, metric="boundary_iou")
+        require_single_channel(target, metric="boundary_iou")
         pred = input.detach().cpu().numpy()
         gt   = target.detach().cpu().numpy()
         scores: list[Optional[float]] = []

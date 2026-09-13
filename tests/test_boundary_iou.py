@@ -248,6 +248,13 @@ class TestBoundaryIoUMetricAdapter:
         with pytest.raises(TypeError):
             boundary_iou_metric(threshold=0.5)
 
+    def test_multi_channel_input_is_rejected(self):
+        """No one-hot / multi-channel path (spec D6): score one class per run
+        via Mask(label=k) instead of stacking classes into channels."""
+        one_hot = torch.zeros(1, 2, 8, 8)
+        with pytest.raises(ValueError, match=r"one class per run.*Mask\(label=k\)"):
+            BoundaryIoUMetric()(one_hot, one_hot.clone())
+
 
 class TestBoundaryIoUMetricBuilder:
     def test_returns_metric_spec(self):

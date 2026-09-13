@@ -5,6 +5,7 @@ import torch
 from iqaevaluator.segmentation_metrics.volume import (
     as_mask,
     require_binary,
+    require_single_channel,
     foreground_counts,
     empty_policy,
     NOT_EMPTY,
@@ -221,3 +222,10 @@ class TestAdapterHelpers:
 
     def test_empty_policy_leaves_populated_pairs_alone(self):
         assert empty_policy(3, 4, one_sided=0.0) is NOT_EMPTY
+
+    def test_require_single_channel_accepts_single_channel(self):
+        require_single_channel(torch.zeros(2, 1, 4, 4), metric="dice")
+
+    def test_require_single_channel_rejects_multi_channel(self):
+        with pytest.raises(ValueError, match=r"one class per run.*Mask\(label=k\)"):
+            require_single_channel(torch.zeros(1, 2, 4, 4), metric="dice")

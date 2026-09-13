@@ -66,6 +66,22 @@ def require_binary(t: torch.Tensor, *, metric: str) -> None:
         )
 
 
+def require_single_channel(t: torch.Tensor, *, metric: str) -> None:
+    """Raise unless `t` has exactly one channel (`t.shape[1] == 1`).
+
+    None of the adapters have a one-hot / multi-channel path; a multi-label
+    dataset is scored one class at a time via `normalization.Mask(label=k)`,
+    not by stacking classes into channels.
+    """
+    if t.shape[1] > 1:
+        raise ValueError(
+            f"{metric} scores one class per run: this adapter has no "
+            "one-hot / multi-channel path — pass a single-channel mask "
+            "and select one class at a time with normalization.Mask(label=k) "
+            "instead of stacking classes into channels."
+        )
+
+
 def foreground_counts(y_pred: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Per-sample foreground voxel counts of `(N, C, *spatial)` batches."""
     dims = tuple(range(1, y_pred.dim()))

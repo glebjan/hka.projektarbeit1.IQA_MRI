@@ -150,3 +150,10 @@ class TestBinaryContract:
     def test_integer_zero_one_masks_are_accepted(self):
         pred, gt = _pair_4d()
         assert MetricRegistry(VS).get_metric("vs")(pred.to(torch.int16), gt.to(torch.int16))[0] == pytest.approx(1.0)
+
+    def test_multi_channel_input_is_rejected(self):
+        """No one-hot / multi-channel path (spec D6): score one class per run
+        via Mask(label=k) instead of stacking classes into channels."""
+        one_hot = torch.zeros(1, 2, 8, 8)
+        with pytest.raises(ValueError, match=r"one class per run.*Mask\(label=k\)"):
+            MetricRegistry(VS).get_metric("vs")(one_hot, one_hot.clone())

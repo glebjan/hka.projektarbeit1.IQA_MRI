@@ -58,7 +58,7 @@ from monai.metrics import (
 
 from iqaevaluator.metric_spec import MetricSpec, ModeSupport, Spacing
 from iqaevaluator.segmentation_metrics.volume import (
-    NOT_EMPTY, empty_policy, foreground_counts, require_binary,
+    NOT_EMPTY, empty_policy, foreground_counts, require_binary, require_single_channel,
 )
 
 DOMAIN_MEDICAL = "medical (MONAI)"
@@ -118,13 +118,8 @@ class MonaiSegmentationMetric:
             raise ValueError(f"'{self._name}' compares two masks and requires a target mask")
         require_binary(input, metric=self._name)
         require_binary(target, metric=self._name)
-        if input.shape[1] > 1 or target.shape[1] > 1:
-            raise ValueError(
-                f"{self._name} scores one class per run: this adapter has no "
-                "one-hot / multi-channel path — pass a single-channel mask "
-                "and select one class at a time with normalization.Mask(label=k) "
-                "instead of stacking classes into channels."
-            )
+        require_single_channel(input, metric=self._name)
+        require_single_channel(target, metric=self._name)
         # MONAI 1.6.0 happens to accept integer input; that is an implementation
         # detail of a third-party library, so the adapter guarantees floats itself.
         y_pred, y = input.float(), target.float()

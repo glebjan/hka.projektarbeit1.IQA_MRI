@@ -25,7 +25,7 @@ import numpy as np
 import torch
 
 from iqaevaluator.metric_spec import MetricSpec, ModeSupport
-from iqaevaluator.segmentation_metrics.volume import require_binary
+from iqaevaluator.segmentation_metrics.volume import require_binary, require_single_channel
 from iqaevaluator.segmentation_metrics.volume import tp as _tp
 from iqaevaluator.segmentation_metrics.volume import v_gt as _v_gt
 from iqaevaluator.segmentation_metrics.volume import v_pred as _v_pred
@@ -42,7 +42,9 @@ class VolumeFunctionMetric:
     and scores the whole `(D, H, W)` body at once.
 
     Input must be binary — load masks with `normalization.Mask()`. The numpy
-    function's own `as_mask` is then a no-op.
+    function's own `as_mask` is then a no-op. There is no one-hot /
+    multi-channel path: a multi-channel `(N, C>1, ...)` batch is rejected
+    with a `ValueError` — score one class at a time via `Mask(label=k)`.
 
     Args:
         fn: one of `vs`, `vs_signed`, `v_pred`, `v_gt`, `tp`.
@@ -60,6 +62,8 @@ class VolumeFunctionMetric:
             )
         require_binary(input, metric=self._fn.__name__)
         require_binary(target, metric=self._fn.__name__)
+        require_single_channel(input, metric=self._fn.__name__)
+        require_single_channel(target, metric=self._fn.__name__)
         pred = input.detach().cpu().numpy()
         gt   = target.detach().cpu().numpy()
         scores: list[Optional[float]] = []
