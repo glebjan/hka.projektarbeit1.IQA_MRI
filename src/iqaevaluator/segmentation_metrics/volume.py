@@ -9,6 +9,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+import torch
 
 
 def as_mask(x: np.ndarray, label: Optional[int] = None, threshold: float = 0.5) -> np.ndarray:
@@ -40,6 +41,50 @@ def as_mask(x: np.ndarray, label: Optional[int] = None, threshold: float = 0.5) 
     if np.issubdtype(x.dtype, np.integer):
         return x != 0 if label is None else x == label
     raise TypeError(f"as_mask does not support dtype {x.dtype}")
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers for the metric adapters (monai_metrics, volume_metrics,
+# boundary_iou). Every adapter validates its input and applies the empty-mask
+# policy the same way; the numbers below never come from a metric backend.
+# ---------------------------------------------------------------------------
+
+NOT_EMPTY = object()
+"""`empty_policy`'s answer when both masks have foreground: compute the metric."""
+
+
+def require_binary(t: torch.Tensor, *, metric: str) -> None:
+    """Raise unless every value of `t` is 0 or 1 — the contract `Mask()` fulfils.
+
+    A probability map loaded with `MinMax()`, or a label map loaded with
+    `Raw()`, would otherwise be scored on whatever the backend makes of it.
+    """
+    if not bool(((t == 0) | (t == 1)).all()):
+        raise ValueError(
+            f"{metric} expects a binary mask with values in {{0, 1}}; "
+            "load masks with normalization.Mask()"
+        )
+
+
+def foreground_counts(y_pred: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-sample foreground voxel counts of `(N, C, *spatial)` batches."""
+    dims = tuple(range(1, y_pred.dim()))
+    return (y_pred != 0).sum(dim=dims), (y != 0).sum(dim=dims)
+
+
+def empty_policy(n_pred: int, n_gt: int, *, one_sided: Optional[float]):
+    """The empty-mask policy, one place for every metric.
+
+    Both masks empty: the score is undefined → `None`. Exactly one empty:
+    the metric's `one_sided` value — 0.0 for overlap-type scores (Dice, VS,
+    NSD, PQ, Boundary IoU), `None` for distances (HD95, ASSD), which have no
+    finite value there. Otherwise `NOT_EMPTY`: compute the metric.
+    """
+    if n_pred == 0 and n_gt == 0:
+        return None
+    if n_pred == 0 or n_gt == 0:
+        return one_sided
+    return NOT_EMPTY
 
 
 def _check_shapes(pred: np.ndarray, gt: np.ndarray) -> None:

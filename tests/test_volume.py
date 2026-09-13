@@ -1,7 +1,14 @@
 import numpy as np
 import pytest
+import torch
 
-from iqaevaluator.segmentation_metrics.volume import as_mask
+from iqaevaluator.segmentation_metrics.volume import (
+    as_mask,
+    require_binary,
+    foreground_counts,
+    empty_policy,
+    NOT_EMPTY,
+)
 
 
 def test_as_mask_bool_passthrough():
@@ -181,3 +188,36 @@ class TestRawLabelMapEndToEnd:
         assert v_pred(pred, pred, label=2) == 32.0
         assert v_pred(pred, pred, label=3) == 24.0
         assert vs(pred, pred, label=2) == 1.0
+
+
+class TestAdapterHelpers:
+    def test_require_binary_accepts_zero_one_floats_and_ints(self):
+        require_binary(torch.tensor([[0.0, 1.0]]), metric="dice")
+        require_binary(torch.tensor([[0, 1]], dtype=torch.int16), metric="dice")
+
+    def test_require_binary_rejects_anything_else_and_names_mask(self):
+        with pytest.raises(ValueError, match=r"dice expects a binary mask.*Mask\(\)"):
+            require_binary(torch.tensor([[0.0, 0.5, 1.0]]), metric="dice")
+        with pytest.raises(ValueError, match=r"Mask\(\)"):
+            require_binary(torch.tensor([[0, 1, 2]], dtype=torch.int16), metric="dice")
+
+    def test_foreground_counts_are_per_sample(self):
+        y_pred = torch.zeros(2, 1, 4, 4); y_pred[0, 0, :2] = 1.0
+        y = torch.zeros(2, 1, 4, 4); y[1, 0, 1, 1] = 1.0
+        n_pred, n_gt = foreground_counts(y_pred, y)
+        assert n_pred.tolist() == [8, 0] and n_gt.tolist() == [0, 1]
+
+    def test_foreground_counts_handle_5d_volumes(self):
+        vol = torch.ones(1, 1, 2, 3, 3)
+        assert foreground_counts(vol, vol)[0].tolist() == [18]
+
+    @pytest.mark.parametrize("n_pred, n_gt, one_sided, expected", [
+        (0, 0, 0.0, None), (0, 0, None, None),
+        (5, 0, 0.0, 0.0), (0, 5, 0.0, 0.0),
+        (5, 0, None, None), (0, 5, None, None),
+    ])
+    def test_empty_policy_table(self, n_pred, n_gt, one_sided, expected):
+        assert empty_policy(n_pred, n_gt, one_sided=one_sided) is expected
+
+    def test_empty_policy_leaves_populated_pairs_alone(self):
+        assert empty_policy(3, 4, one_sided=0.0) is NOT_EMPTY
