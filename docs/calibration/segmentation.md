@@ -1,6 +1,6 @@
 # Segmentation-metric calibration report
 
-Generated 2026-09-13 by `hatch run calibration:report` at framework commit `dfc6cae`.
+Generated 2026-09-14 by `hatch run calibration:report` at framework commit `14ba43e`.
 Framework stack: monai 1.6.0, pyiqa 0.1.15.post2, scipy 1.18.1, torch 2.14.0, numpy 2.5.3. Reference packages: medpy 0.5.2, surface-distance 0.1, panopticapi git 7bb4655548f9, boundary-iou-api vendored mask_to_boundary, git 37d25586a677.
 
 Authority, in order: (1) the metric's definition applied by hand to a fixture small enough for the derivation to fit in a few lines — the derivation is what a reviewer checks; (2) the implementation the community cites, run on the same fixture with the same definitional variant; (3) MONAI's own test cases through this framework's loader and adapters. Δ = framework − hand value. Every framework value went through the public path (NIfTI → `load_pair` → `MetricRegistry` → evaluator → record).
@@ -142,7 +142,7 @@ MONAI 1.6.0 test cases through `Mask()`/`Raw()` and the adapters:
 
 | case | hand value | derivation | official (package@version, variant) | framework | Δ | divergent variants¹ |
 |---|---|---|---|---|---|---|
-| F4_pq | 0.300000 | Kirillov 2019 Eq. 1: PQ = sum_TP IoU / (\|TP\| + 0.5\|FP\| + 0.5\|FN\|). GT1 vs Pred1: overlap 12, union 20, IoU 0.6 > 0.5 -> TP; GT2 unmatched -> FN; Pred3 unmatched -> FP. PQ = 0.6 / (1 + 0.5 + 0.5) = 0.3 (SQ 0.6, RQ 0.5). MONAI adds smooth_numerator=1e-6 to the denominator -> 0.29999986; tolerance 1e-6.<br>*Kirillov et al. 2019, CVPR, Eq. 1* | 0.300000 — panopticapi `pq_compute_single_core` — background as stuff, things-only PQ | 0.300000 | -1.37e-07 | — |
+| F4_pq | 0.300000 | Kirillov 2019 Eq. 1: PQ = sum_TP IoU / (\|TP\| + 0.5\|FP\| + 0.5\|FN\|). GT1 vs Pred1: overlap 12, union 20, IoU 0.6 > 0.5 -> TP; GT2 unmatched -> FN; Pred3 unmatched -> FP. PQ = 0.6 / (1 + 0.5 + 0.5) = 0.3 (SQ 0.6, RQ 0.5). MONAI adds smooth_numerator=1e-6 to the denominator -> 0.6 / 2.000001 = 0.29999985 (0.29999986 in float32); tolerance 1e-6.<br>*Kirillov et al. 2019, CVPR, Eq. 1* | 0.300000 — panopticapi `pq_compute_single_core` — background as stuff, things-only PQ | 0.300000 | -1.37e-07 | — |
 
 Empty-mask policy (spec D3):
 
