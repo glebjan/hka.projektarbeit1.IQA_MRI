@@ -132,6 +132,38 @@ class TestCrossCheck:
 
         assert volume_dice == pytest.approx(aggregated, abs=1e-6)
 
+    def test_one_label_of_a_label_map_agrees_between_modes(self, tmp_path):
+        """F6: a {0,1,2} int16 map under Mask(label=2). Volume dice == aggregated
+        slice dice == 0.75; under Mask() the label-1 block joins in: 56/72."""
+        import nibabel as nib
+        from main import evaluate
+        from iqaevaluator.normalization import Mask
+        from iqaevaluator.segmentation_metrics.monai_metrics import DICE
+        from iqaevaluator.segmentation_metrics.volume_metrics import TP, V_GT, V_PRED
+
+        gt = np.zeros((4, 8, 8), dtype=np.int16)          # (D, H, W)
+        gt[0:1, 0:2, 0:2] = 1
+        gt[1:3, 2:6, 2:6] = 2
+        pred = np.zeros_like(gt)
+        pred[0:1, 0:2, 0:2] = 1
+        pred[1:3, 2:6, 3:7] = 2
+        paths = {}
+        for name, arr in (("case_pred", pred), ("case_gt", gt)):
+            # the NIfTI decoder yields (Z, X, Y) with spacing (dz, dx, dy): write (H, W, D)
+            paths[name] = tmp_path / f"{name}.nii.gz"
+            nib.save(nib.Nifti1Image(np.ascontiguousarray(np.transpose(arr, (1, 2, 0))), np.eye(4)), paths[name])
+
+        volume = evaluate(paths["case_pred"], paths["case_gt"], registry=MetricRegistry(DICE),
+                          mode="volume", normalization=Mask(label=2)).to_frame().iloc[0]["dice"]
+        aggregated = evaluate(paths["case_pred"], paths["case_gt"], registry=MetricRegistry(V_PRED, V_GT, TP),
+                              mode="slice", normalization=Mask(label=2)).aggregate_volumes().iloc[0]["dice"]
+        assert volume == pytest.approx(0.75, abs=1e-6)
+        assert aggregated == pytest.approx(0.75, abs=1e-6)
+
+        any_label = evaluate(paths["case_pred"], paths["case_gt"], registry=MetricRegistry(DICE),
+                             mode="volume", normalization=Mask()).to_frame().iloc[0]["dice"]
+        assert any_label == pytest.approx(56 / 72, abs=1e-6)
+
 
 class TestBinaryContract:
     def test_non_binary_input_raises_naming_mask(self):
