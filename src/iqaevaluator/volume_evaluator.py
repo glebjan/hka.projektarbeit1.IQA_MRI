@@ -5,7 +5,7 @@ a `(D, C, H, W)` batch of slices, this hands it one `(1, C, D, H, W)` sample, so
 metrics that understand 3D geometry (surface distance, panoptic quality,
 boundary bands) measure across slices instead of within them.
 
-Two deliberate differences from the slice path:
+Three deliberate differences from the slice path:
 
 - Empty slices are NOT filtered. Removing slices from a volume is not filtering,
   it is a change of geometry: the body gains holes and surface distances start

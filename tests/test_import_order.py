@@ -15,6 +15,7 @@ import pytest
 @pytest.mark.parametrize("module", [
     "iqaevaluator.segmentation_metrics.boundary_iou",
     "iqaevaluator.segmentation_metrics.monai_metrics",
+    "iqaevaluator.segmentation_metrics.volume_metrics",
     "iqaevaluator.dreamsim_metric",
 ])
 def test_module_imports_first_in_a_fresh_interpreter(module):

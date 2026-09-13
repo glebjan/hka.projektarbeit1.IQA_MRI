@@ -10,7 +10,7 @@ top like any other module — no import cycle, no import-order rules.
 import MetricSpec` keeps working.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Literal, Optional, Protocol, Sequence, runtime_checkable
 
 import torch

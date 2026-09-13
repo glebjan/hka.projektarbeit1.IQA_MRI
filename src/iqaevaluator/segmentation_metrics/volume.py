@@ -108,12 +108,15 @@ def foreground_counts(y_pred: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tens
 
 
 def empty_policy(n_pred: int, n_gt: int, *, one_sided: Optional[float]):
-    """The empty-mask policy, one place for every metric.
+    """The empty-mask policy, as the MONAI-backed adapters apply it.
 
     Both masks empty: the score is undefined → `None`. Exactly one empty:
-    the metric's `one_sided` value — 0.0 for overlap-type scores (Dice, VS,
-    NSD, PQ, Boundary IoU), `None` for distances (HD95, ASSD), which have no
-    finite value there. Otherwise `NOT_EMPTY`: compute the metric.
+    the metric's `one_sided` value — 0.0 for the overlap-type scores that
+    call this (Dice, NSD, PQ), `None` for distances (HD95, ASSD), which have
+    no finite value there. Otherwise `NOT_EMPTY`: compute the metric.
+
+    VS and Boundary IoU never call this helper; their own arithmetic reaches
+    the same values (0.0 with one side empty, NaN → `None` with both).
     """
     if n_pred == 0 and n_gt == 0:
         return None
