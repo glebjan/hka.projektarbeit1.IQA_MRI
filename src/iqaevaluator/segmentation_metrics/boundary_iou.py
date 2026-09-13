@@ -30,6 +30,8 @@ where through-plane errors occur. Without spacing it falls back to the paper's
 voxel/chessboard band. The 2D path is unchanged and stays bit-identical to
 Cheng et al.; a cubic band and a ball-shaped band are not directly comparable,
 so slice-mode and volume-mode scores should not be compared with each other.
+The physical band is never thinner than the coarsest voxel spacing (see
+`band_width`).
 """
 from __future__ import annotations
 
@@ -40,7 +42,7 @@ import torch
 from scipy.ndimage import distance_transform_cdt, distance_transform_edt
 
 from iqaevaluator.metric_spec import MetricSpec, ModeSupport
-from iqaevaluator.segmentation_metrics.volume import as_mask
+from iqaevaluator.segmentation_metrics.volume import as_mask, require_binary
 
 DEFAULT_DILATION_RATIO = 0.02
 """Paper default: boundary band width as a fraction of the image diagonal."""
@@ -51,16 +53,22 @@ def band_width(
     dilation_ratio: float = DEFAULT_DILATION_RATIO,
     spacing: Optional[tuple[float, ...]] = None,
 ) -> float:
-    """Boundary band width for a mask of `shape`, floored at 1.
+    """Boundary band width for a mask of `shape`.
 
     Without `spacing` the width is a fraction of the diagonal in voxels,
-    rounded to the nearest whole voxel — the paper's definition, and the same
-    value `dilation_pixels` returns; chessboard distances are integers, so
-    thresholding at anything else would silently shift the band. With
-    `spacing` it is a fraction of the diagonal in millimetres, left
-    un-rounded since a physical width has no reason to be a whole number of
-    anything; this keeps the band equally thick along every axis on
-    anisotropic data instead of widening it along the coarse one.
+    rounded to the nearest whole voxel and floored at 1 — the paper's
+    definition, and the same value `dilation_pixels` returns; chessboard
+    distances are integers, so thresholding at anything else would silently
+    shift the band.
+
+    With `spacing` it is a fraction of the diagonal in millimetres, left
+    un-rounded, floored at `max(spacing)`: at least one voxel along every
+    axis. The nearest background voxel across a face lies exactly one
+    spacing away along that axis, so a band thinner than the coarsest
+    spacing would contain no face perpendicular to that axis at all — on
+    3 mm slices with a 1.2 mm band the whole through-plane boundary
+    vanished and a one-slice shift scored better than a one-voxel in-plane
+    shift.
 
     Args:
         shape: the mask's shape, 2D or 3D.
@@ -69,8 +77,9 @@ def band_width(
     """
     extent = np.asarray(shape, dtype=float)
     if spacing is not None:
-        extent = extent * np.asarray(spacing, dtype=float)
-        return max(1.0, dilation_ratio * float(np.linalg.norm(extent)))
+        spacing_arr = np.asarray(spacing, dtype=float)
+        extent = extent * spacing_arr
+        return max(float(spacing_arr.max()), dilation_ratio * float(np.linalg.norm(extent)))
     return float(max(1, round(dilation_ratio * float(np.linalg.norm(extent)))))
 
 
@@ -138,7 +147,7 @@ def boundary_iou(
     gt: np.ndarray,
     *,
     dilation_ratio: float = DEFAULT_DILATION_RATIO,
-    label: int = 1,
+    label: Optional[int] = None,
     threshold: float = 0.5,
     spacing: Optional[tuple[float, ...]] = None,
 ) -> float:
@@ -153,7 +162,8 @@ def boundary_iou(
         gt: reference mask, same shape and convention as `pred`.
         dilation_ratio: band width as a fraction of the image diagonal. Larger
             values are more forgiving; at 1.0 the metric equals mask IoU.
-        label: for integer label maps, which class to score one-vs-rest.
+        label: for integer label maps, which class to score one-vs-rest; None
+            scores every non-zero label.
         threshold: for float masks, the binarization cutoff (`value >= threshold`).
         spacing: physical size per axis. Without it the band is measured in
             voxels (the paper's definition); with it, in physical units.
@@ -190,37 +200,28 @@ def boundary_iou(
 class BoundaryIoUMetric:
     """Adapter making `boundary_iou` satisfy the framework's Metric protocol.
 
-    Scores channel 0 of each sample in an `(N, C, H, W)` batch, looping over the
-    batch the way `MonaiPanopticQualityMetric` does, and returns one score per
-    sample. Undefined scores (both masks empty) come back as `None`.
-
-    Integer label maps (multi-class one-vs-rest scoring) are not supported
-    here — call the numpy `boundary_iou` function directly with `label=...`
-    for that; `ImageLoader` tensors are always float32 in [0, 1], so this
-    adapter always binarizes via `threshold`.
+    Scores channel 0 of each sample in an `(N, C, H, W)` batch (or the whole
+    `(D, H, W)` body of a `(1, C, D, H, W)` volume), looping over the batch,
+    and returns one score per sample. Input must be binary — load masks with
+    `normalization.Mask()` (`Mask(label=k)` selects one class of a label
+    map). Both masks empty → the score is undefined and comes back as `None`;
+    one mask empty → 0.0.
 
     Args:
         dilation_ratio: boundary band width as a fraction of the image diagonal.
-        threshold: binarization cutoff for float masks (`value >= threshold`).
-            Unlike the MONAI adapters there is no "skip binarization" option —
-            the band computation needs a boolean array, so a cutoff always
-            applies. Masks loaded via `ImageLoader` arrive as exact 0.0/1.0
-            floats, for which any cutoff in (0, 1) is equivalent.
         spacing: physical size per axis. Without it (slice mode) the band is
             measured in voxels; with it (volume mode) it is measured in
             physical units, so it stays equally thick along every axis on
-            anisotropic data.
+            anisotropic data and never thinner than one voxel (`band_width`).
     """
 
     def __init__(
         self,
         *,
         dilation_ratio: float = DEFAULT_DILATION_RATIO,
-        threshold: float = 0.5,
         spacing: Optional[tuple[float, ...]] = None,
     ):
         self._dilation_ratio = dilation_ratio
-        self._threshold      = threshold
         self._spacing        = spacing
 
     def __call__(
@@ -230,40 +231,34 @@ class BoundaryIoUMetric:
             raise ValueError(
                 "boundary_iou is a full-reference metric and requires a target mask"
             )
+        require_binary(input, metric="boundary_iou")
+        require_binary(target, metric="boundary_iou")
         pred = input.detach().cpu().numpy()
         gt   = target.detach().cpu().numpy()
         scores: list[Optional[float]] = []
         for i in range(pred.shape[0]):
             score = boundary_iou(
-                pred[i, 0],
-                gt[i, 0],
-                dilation_ratio=self._dilation_ratio,
-                threshold=self._threshold,
-                spacing=self._spacing,
+                pred[i, 0], gt[i, 0],
+                dilation_ratio=self._dilation_ratio, spacing=self._spacing,
             )
             scores.append(None if np.isnan(score) else float(score))
         return scores
 
 
-def boundary_iou_metric(
-    *,
-    dilation_ratio: float = DEFAULT_DILATION_RATIO,
-    threshold: float = 0.5,
-) -> MetricSpec:
+def boundary_iou_metric(*, dilation_ratio: float = DEFAULT_DILATION_RATIO) -> MetricSpec:
     """Boundary IoU: IoU of the contour bands rather than the whole mask.
 
     Domain-agnostic: the band width is a fraction of the image diagonal, so
     there is no physical spacing or class count to retune between domains —
     `dilation_ratio` is the single tunable and means the same thing everywhere.
+    Input must be binary — load masks with `Mask()`.
 
     Args:
         dilation_ratio: boundary band width as a fraction of sqrt(H^2 + W^2)
             (default 0.02, the paper's value). Larger is more forgiving; 1.0
             degenerates to plain mask IoU.
-        threshold: binarization cutoff for float/probability masks
-            (`value >= threshold` -> True).
     """
-    metric = BoundaryIoUMetric(dilation_ratio=dilation_ratio, threshold=threshold)
+    metric = BoundaryIoUMetric(dilation_ratio=dilation_ratio)
 
     def build_volume_metric(spacing: Optional[tuple[float, ...]]) -> BoundaryIoUMetric:
         if spacing is None:
@@ -276,9 +271,7 @@ def boundary_iou_metric(
                 "the same grid. To get an evenly thick band, use a format that "
                 "records the voxel size (NIfTI, NRRD, MHA or DICOM)."
             )
-        return BoundaryIoUMetric(
-            dilation_ratio=dilation_ratio, threshold=threshold, spacing=spacing
-        )
+        return BoundaryIoUMetric(dilation_ratio=dilation_ratio, spacing=spacing)
 
     return MetricSpec(
         name="boundary_iou",

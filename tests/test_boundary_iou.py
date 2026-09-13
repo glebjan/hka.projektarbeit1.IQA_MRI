@@ -237,11 +237,16 @@ class TestBoundaryIoUMetricAdapter:
         wide = BoundaryIoUMetric(dilation_ratio=1.0)(_batch([a]), _batch([b]))
         assert wide[0] == pytest.approx(_mask_iou(a, b))
 
-    def test_threshold_binarizes_soft_masks(self):
-        soft_pred = np.where(_square(160, 120), 0.9, 0.1)
-        soft_gt = np.where(_square(160, 120), 0.7, 0.2)
-        scores = BoundaryIoUMetric(threshold=0.5)(_batch([soft_pred]), _batch([soft_gt]))
-        assert scores[0] == pytest.approx(1.0)
+    def test_non_binary_input_raises_naming_mask(self):
+        soft = np.where(_square(160, 120), 0.9, 0.1)
+        with pytest.raises(ValueError, match=r"boundary_iou expects a binary mask.*Mask\(\)"):
+            BoundaryIoUMetric()(_batch([soft]), _batch([soft]))
+
+    def test_removed_threshold_keyword_fails_loudly(self):
+        with pytest.raises(TypeError):
+            BoundaryIoUMetric(threshold=0.5)
+        with pytest.raises(TypeError):
+            boundary_iou_metric(threshold=0.5)
 
 
 class TestBoundaryIoUMetricBuilder:
@@ -359,6 +364,17 @@ class TestBandWidth:
         """0.1 * hypot(400, 400) = 56.5685 -- round gives 57, truncation gives 56."""
         assert band_width((400, 400), 0.1) == pytest.approx(57.0)
         assert band_width((400, 400), 0.1) == pytest.approx(float(dilation_pixels((400, 400), 0.1)))
+
+    def test_physical_floor_is_one_voxel_along_the_coarsest_axis(self):
+        # 0.02 * |(24, 40, 40)| = 1.229 mm would be thinner than the 3 mm slice
+        # spacing, so no face perpendicular to D could ever be in the band.
+        assert band_width((8, 40, 40), 0.02, (3.0, 1.0, 1.0)) == 3.0
+
+    def test_physical_floor_does_not_touch_large_volumes(self):
+        assert band_width((130, 256, 256), 0.02, (1.2, 1.0, 1.0)) == pytest.approx(7.884364, abs=1e-6)
+
+    def test_physical_floor_uses_the_largest_spacing_whatever_its_axis(self):
+        assert band_width((8, 40, 40), 0.02, (1.0, 1.0, 3.0)) == 3.0
 
 
 class TestBoundaryIoU3D:

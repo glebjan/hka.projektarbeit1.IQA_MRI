@@ -131,3 +131,22 @@ class TestCrossCheck:
         ).aggregate_volumes().iloc[0]["dice"]
 
         assert volume_dice == pytest.approx(aggregated, abs=1e-6)
+
+
+class TestBinaryContract:
+    def test_non_binary_input_raises_naming_mask(self):
+        half = torch.full((1, 1, 8, 8), 0.5)
+        with pytest.raises(ValueError, match=r"vs expects a binary mask.*Mask\(\)"):
+            MetricRegistry(VS).get_metric("vs")(half, half)
+
+    def test_removed_threshold_keyword_fails_loudly(self):
+        from iqaevaluator.segmentation_metrics.volume_metrics import VolumeFunctionMetric, vs_metric
+        from iqaevaluator.segmentation_metrics.volume import vs
+        with pytest.raises(TypeError):
+            vs_metric(threshold=0.5)
+        with pytest.raises(TypeError):
+            VolumeFunctionMetric(vs, threshold=0.5)
+
+    def test_integer_zero_one_masks_are_accepted(self):
+        pred, gt = _pair_4d()
+        assert MetricRegistry(VS).get_metric("vs")(pred.to(torch.int16), gt.to(torch.int16))[0] == pytest.approx(1.0)

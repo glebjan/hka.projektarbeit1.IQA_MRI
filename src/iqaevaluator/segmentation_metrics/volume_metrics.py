@@ -25,6 +25,7 @@ import numpy as np
 import torch
 
 from iqaevaluator.metric_spec import MetricSpec, ModeSupport
+from iqaevaluator.segmentation_metrics.volume import require_binary
 from iqaevaluator.segmentation_metrics.volume import tp as _tp
 from iqaevaluator.segmentation_metrics.volume import v_gt as _v_gt
 from iqaevaluator.segmentation_metrics.volume import v_pred as _v_pred
@@ -40,15 +41,15 @@ class VolumeFunctionMetric:
     and scores each sample's channel 0; in volume mode it sees `(1, C, D, H, W)`
     and scores the whole `(D, H, W)` body at once.
 
+    Input must be binary — load masks with `normalization.Mask()`. The numpy
+    function's own `as_mask` is then a no-op.
+
     Args:
         fn: one of `vs`, `vs_signed`, `v_pred`, `v_gt`, `tp`.
-        threshold: binarization cutoff for float masks (`value >= threshold`).
-            ImageLoader tensors are floats in [0, 1], so a cutoff always applies.
     """
 
-    def __init__(self, fn: Callable[..., float], *, threshold: float = 0.5):
-        self._fn        = fn
-        self._threshold = threshold
+    def __init__(self, fn: Callable[..., float]):
+        self._fn = fn
 
     def __call__(
         self, input: torch.Tensor, target: Optional[torch.Tensor] = None
@@ -57,28 +58,31 @@ class VolumeFunctionMetric:
             raise ValueError(
                 f"'{self._fn.__name__}' compares two masks and requires a target mask"
             )
+        require_binary(input, metric=self._fn.__name__)
+        require_binary(target, metric=self._fn.__name__)
         pred = input.detach().cpu().numpy()
         gt   = target.detach().cpu().numpy()
         scores: list[Optional[float]] = []
         for i in range(pred.shape[0]):
-            value = self._fn(pred[i, 0], gt[i, 0], threshold=self._threshold)
+            value = self._fn(pred[i, 0], gt[i, 0])
             scores.append(None if np.isnan(value) else float(value))
         return scores
 
 
-def _both_modes(fn: Callable[..., float], threshold: float) -> tuple[ModeSupport, ModeSupport]:
+def _both_modes(fn: Callable[..., float]) -> tuple[ModeSupport, ModeSupport]:
     """Slice and volume capability for a function that is already shape-agnostic."""
-    metric = VolumeFunctionMetric(fn, threshold=threshold)
+    metric = VolumeFunctionMetric(fn)
     return ModeSupport(lambda: metric), ModeSupport(lambda spacing: metric)
 
 
-def vs_metric(*, threshold: float = 0.5) -> MetricSpec:
+def vs_metric() -> MetricSpec:
     """Volumetric Similarity (Taha & Hanbury): 1 - |Vp - Vg| / (Vp + Vg).
 
     Range [0, 1]; 1.0 means the two masks have the same size. Spacing-invariant:
-    the voxel volume cancels in numerator and denominator.
+    the voxel volume cancels in numerator and denominator. One empty mask
+    scores 0.0, both empty is undefined (None).
     """
-    slice_mode, volume_mode = _both_modes(_vs, threshold)
+    slice_mode, volume_mode = _both_modes(_vs)
     return MetricSpec(
         name="vs", direction="higher_is_better", reference=True, channels="gray",
         slice_mode=slice_mode, volume_mode=volume_mode, builtin=False,
@@ -93,13 +97,13 @@ def vs_metric(*, threshold: float = 0.5) -> MetricSpec:
     )
 
 
-def vs_signed_metric(*, threshold: float = 0.5) -> MetricSpec:
+def vs_signed_metric() -> MetricSpec:
     """Signed Volumetric Similarity (SimpleITK convention), range [-2, 2].
 
     Negative means the prediction is smaller than the reference
     (undersegmentation), positive means larger (oversegmentation).
     """
-    slice_mode, volume_mode = _both_modes(_vs_signed, threshold)
+    slice_mode, volume_mode = _both_modes(_vs_signed)
     return MetricSpec(
         name="vs_signed", direction="not_ranked", reference=True, channels="gray",
         slice_mode=slice_mode, volume_mode=volume_mode, builtin=False,
@@ -112,8 +116,8 @@ def vs_signed_metric(*, threshold: float = 0.5) -> MetricSpec:
     )
 
 
-def _count_metric(name: str, fn: Callable[..., float], what: str, threshold: float) -> MetricSpec:
-    slice_mode, volume_mode = _both_modes(fn, threshold)
+def _count_metric(name: str, fn: Callable[..., float], what: str) -> MetricSpec:
+    slice_mode, volume_mode = _both_modes(fn)
     return MetricSpec(
         name=name, direction="not_ranked", reference=True, channels="gray",
         slice_mode=slice_mode, volume_mode=volume_mode, builtin=False,
@@ -126,16 +130,16 @@ def _count_metric(name: str, fn: Callable[..., float], what: str, threshold: flo
     )
 
 
-def v_pred_metric(*, threshold: float = 0.5) -> MetricSpec:
-    return _count_metric("v_pred", _v_pred, "voxels marked in the prediction", threshold)
+def v_pred_metric() -> MetricSpec:
+    return _count_metric("v_pred", _v_pred, "voxels marked in the prediction")
 
 
-def v_gt_metric(*, threshold: float = 0.5) -> MetricSpec:
-    return _count_metric("v_gt", _v_gt, "voxels marked in the reference", threshold)
+def v_gt_metric() -> MetricSpec:
+    return _count_metric("v_gt", _v_gt, "voxels marked in the reference")
 
 
-def tp_metric(*, threshold: float = 0.5) -> MetricSpec:
-    return _count_metric("tp", _tp, "voxels marked in both masks", threshold)
+def tp_metric() -> MetricSpec:
+    return _count_metric("tp", _tp, "voxels marked in both masks")
 
 
 VS        = vs_metric()
