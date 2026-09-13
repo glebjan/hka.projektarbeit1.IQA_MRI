@@ -38,10 +38,18 @@ class IntensityRange:
 
 @runtime_checkable
 class Normalizer(Protocol):
-    """Chooses the range for one image. `name` ends up in the report."""
+    """One strategy for turning a decoded array into the tensor metrics see.
+
+    `range_of` says what [0, 1] stands for (None when nothing is scaled),
+    `apply` produces the `(D, H, W)` tensor, `empty_slices` says which slices
+    carry nothing worth scoring. `name` ends up in the report. `source` is
+    the file name, used only in messages.
+    """
     name: str
 
     def range_of(self, raw: np.ndarray) -> Optional[IntensityRange]: ...
+    def apply(self, raw: np.ndarray, *, source: str) -> torch.Tensor: ...
+    def empty_slices(self, raw: np.ndarray) -> torch.Tensor: ...
 
 
 def scale(
@@ -101,8 +109,55 @@ def scale(
     return torch.from_numpy(np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False))
 
 
+def sparse_slices(raw: np.ndarray) -> torch.Tensor:
+    """True for slices with (almost) no content, judged on the raw intensities.
+
+    A slice is empty when its spread is below 0.1 % of the volume's intensity
+    span, or (ordinary intensity images only, see below) its lift above the
+    volume floor is below that same 0.1 %. The span is measured between the
+    0.5th and 99.5th percentiles, so one spike voxel cannot shrink it and mark
+    healthy slices empty. For a volume whose foreground is rarer than 0.5 %
+    the percentile span collapses to zero and the extremes are used instead —
+    and in that fallback regime the lift test is skipped entirely, because a
+    sparse image's slice mean sits only a tiny fraction of the way from floor
+    to ceiling by construction. A constant volume has no span at all and
+    every slice counts as empty.
+
+    This is the heuristic for intensity images. Masks loaded with `Mask()`
+    use an exact voxel count instead (`Mask.empty_slices`).
+    """
+    arr = raw.astype(np.float32, copy=False)
+    lo, hi = (float(v) for v in np.percentile(arr, [0.5, 99.5]))
+    used_extremes = hi <= lo
+    if used_extremes:
+        lo, hi = float(arr.min()), float(arr.max())
+    span = hi - lo
+    if span <= 0.0:
+        return torch.ones(arr.shape[0], dtype=torch.bool)
+    flat = arr.reshape(arr.shape[0], -1)
+    std = flat.std(axis=1)
+    empty = std < 1e-3 * span
+    if not used_extremes:
+        lift = flat.mean(axis=1) - lo
+        empty = empty | (lift < 1e-3 * span)
+    return torch.from_numpy(empty)
+
+
+class _RangeBased:
+    """`apply`/`empty_slices` shared by every strategy that maps a range onto [0, 1]."""
+
+    def range_of(self, raw: np.ndarray) -> Optional[IntensityRange]:  # overridden
+        raise NotImplementedError
+
+    def apply(self, raw: np.ndarray, *, source: str) -> torch.Tensor:
+        return scale(raw, self.range_of(raw), label=source)
+
+    def empty_slices(self, raw: np.ndarray) -> torch.Tensor:
+        return sparse_slices(raw)
+
+
 @dataclass(frozen=True)
-class MinMax:
+class MinMax(_RangeBased):
     """The image's own minimum and maximum. Today's behaviour, the default."""
     name: str = "minmax"
 
@@ -111,7 +166,7 @@ class MinMax:
 
 
 @dataclass(frozen=True)
-class Percentile:
+class Percentile(_RangeBased):
     """Robust extremes: a single spike voxel no longer compresses the image.
 
     Opt-in. Every score changes under it, including psnr and ssim, so results
@@ -125,8 +180,7 @@ class Percentile:
     both percentiles land on background and the span collapses to zero even
     though the image itself is far from constant. `range_of` then falls back
     to the image's own extremes, mirroring the same fallback in
-    `ImageLoader.empty_slice_mask`; a real but sparse image is scaled, not
-    binarized.
+    `sparse_slices`; a real but sparse image is scaled, not binarized.
     """
     lower: float = 0.5
     upper: float = 99.5
@@ -150,7 +204,7 @@ class Percentile:
 
 
 @dataclass(frozen=True)
-class FixedRange:
+class FixedRange(_RangeBased):
     """A range decided elsewhere; the data is ignored.
 
     `name` should be the name of the strategy that produced `range`, so the
@@ -171,7 +225,7 @@ class FixedRange:
 
 
 @dataclass(frozen=True)
-class Raw:
+class Raw(_RangeBased):
     """No scaling. Use for masks and label maps.
 
     The decoded dtype survives, so an integer label map reaches the

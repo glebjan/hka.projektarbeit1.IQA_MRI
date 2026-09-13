@@ -5,7 +5,7 @@ import torch
 
 from iqaevaluator.normalization import (
     NORMALIZER_NAMES, FixedRange, IntensityRange, MinMax, Normalizer,
-    Percentile, Raw, normalizer_from_name, scale,
+    Percentile, Raw, normalizer_from_name, scale, sparse_slices,
 )
 
 
@@ -169,3 +169,32 @@ class TestFromName:
     def test_unknown_name_lists_the_choices(self):
         with pytest.raises(ValueError, match="minmax"):
             normalizer_from_name("zscore")
+
+
+class TestSparseSlices:
+    def test_constant_volume_is_all_empty(self):
+        assert sparse_slices(np.full((3, 8, 8), 7, dtype=np.uint8)).tolist() == [True, True, True]
+
+    def test_blank_slice_is_flagged(self):
+        vol = np.random.default_rng(0).random((4, 32, 32)).astype(np.float32) * 100
+        vol[2] = 0.0
+        assert sparse_slices(vol).tolist() == [False, False, True, False]
+
+    def test_sparse_label_map_keeps_its_one_slice(self):
+        labels = np.zeros((4, 64, 64), dtype=np.int16)
+        labels[1, 10, 10:13] = 1
+        assert sparse_slices(labels).tolist() == [True, False, True, True]
+
+
+class TestApplyAndEmptySlices:
+    @pytest.mark.parametrize("strategy", [MinMax(), Percentile(), FixedRange(IntensityRange(0.0, 200.0), "fixed"), Raw()])
+    def test_apply_is_scale_over_range_of(self, strategy):
+        raw = (np.random.default_rng(1).random((2, 8, 8)) * 200).astype(np.float32)
+        expected = scale(raw, strategy.range_of(raw), label="x")
+        assert torch.equal(strategy.apply(raw, source="x"), expected)
+
+    @pytest.mark.parametrize("strategy", [MinMax(), Percentile(), FixedRange(None, "raw"), Raw()])
+    def test_empty_slices_is_the_sparse_heuristic(self, strategy):
+        raw = np.random.default_rng(2).random((3, 16, 16)).astype(np.float32)
+        raw[1] = 0.0
+        assert torch.equal(strategy.empty_slices(raw), sparse_slices(raw))

@@ -5,18 +5,26 @@ Operate on binary/label masks per 2D/3D slice; aggregate per-patient via
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 
 
-def as_mask(x: np.ndarray, label: int = 1, threshold: float = 0.5) -> np.ndarray:
-    """Binarize an array to a boolean mask.
+def as_mask(x: np.ndarray, label: Optional[int] = None, threshold: float = 0.5) -> np.ndarray:
+    """Binarize an array to a boolean mask — the framework's single binarization rule.
+
+    `normalization.Mask()` calls this at load time; the numpy metrics below
+    call it again on whatever they are handed (a no-op on the {0, 1} floats
+    `Mask()` produces).
 
     - bool array: returned unchanged.
     - float array: values must lie in [0, 1] (probabilities); thresholded
       at `threshold`. Values outside [0, 1] raise ValueError — this usually
       means raw logits were passed without a sigmoid activation.
-    - integer array (label map): one-vs-rest via `x == label`.
+    - integer array (label map): every non-zero value is foreground when
+      `label is None`; otherwise one-vs-rest via `x == label`. A 0/255 PNG
+      mask and a 0/1 NIfTI mask therefore binarize identically.
     """
     if x.dtype == bool:
         return x
@@ -29,11 +37,8 @@ def as_mask(x: np.ndarray, label: int = 1, threshold: float = 0.5) -> np.ndarray
                 "before binarizing?"
             )
         return x >= threshold
-    # Integer input is a label map; it reaches this branch when the file was
-    # loaded with normalization.Raw(). Any other strategy scales it to floats
-    # and the threshold branch above applies.
     if np.issubdtype(x.dtype, np.integer):
-        return x == label
+        return x != 0 if label is None else x == label
     raise TypeError(f"as_mask does not support dtype {x.dtype}")
 
 
@@ -45,19 +50,19 @@ def _check_shapes(pred: np.ndarray, gt: np.ndarray) -> None:
         )
 
 
-def v_pred(pred: np.ndarray, gt: np.ndarray, *, label: int = 1, threshold: float = 0.5) -> float:
+def v_pred(pred: np.ndarray, gt: np.ndarray, *, label: Optional[int] = None, threshold: float = 0.5) -> float:
     """Count of positive voxels in the prediction mask."""
     _check_shapes(pred, gt)
     return float(as_mask(pred, label, threshold).sum())
 
 
-def v_gt(pred: np.ndarray, gt: np.ndarray, *, label: int = 1, threshold: float = 0.5) -> float:
+def v_gt(pred: np.ndarray, gt: np.ndarray, *, label: Optional[int] = None, threshold: float = 0.5) -> float:
     """Count of positive voxels in the reference (ground-truth) mask."""
     _check_shapes(pred, gt)
     return float(as_mask(gt, label, threshold).sum())
 
 
-def tp(pred: np.ndarray, gt: np.ndarray, *, label: int = 1, threshold: float = 0.5) -> float:
+def tp(pred: np.ndarray, gt: np.ndarray, *, label: Optional[int] = None, threshold: float = 0.5) -> float:
     """Count of voxels positive in both prediction and reference masks."""
     _check_shapes(pred, gt)
     pred_mask = as_mask(pred, label, threshold)
@@ -65,7 +70,7 @@ def tp(pred: np.ndarray, gt: np.ndarray, *, label: int = 1, threshold: float = 0
     return float((pred_mask & gt_mask).sum())
 
 
-def vs(pred: np.ndarray, gt: np.ndarray, *, label: int = 1, threshold: float = 0.5) -> float:
+def vs(pred: np.ndarray, gt: np.ndarray, *, label: Optional[int] = None, threshold: float = 0.5) -> float:
     """Volumetric Similarity, Taha & Hanbury (2015) convention.
 
     Range [0, 1]; 1 = identical volume. NOT an overlap measure — two
@@ -79,7 +84,7 @@ def vs(pred: np.ndarray, gt: np.ndarray, *, label: int = 1, threshold: float = 0
     return 1.0 - abs(vp - vg) / denom
 
 
-def vs_signed(pred: np.ndarray, gt: np.ndarray, *, label: int = 1, threshold: float = 0.5) -> float:
+def vs_signed(pred: np.ndarray, gt: np.ndarray, *, label: Optional[int] = None, threshold: float = 0.5) -> float:
     """Signed Volumetric Similarity, SimpleITK convention.
 
     Range [-2, 2]; negative = undersegmentation (prediction volume smaller

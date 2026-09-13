@@ -35,6 +35,16 @@ def test_as_mask_unsupported_dtype_raises():
         as_mask(x)
 
 
+def test_as_mask_int_default_is_any_nonzero():
+    x = np.array([0, 1, 2, 255], dtype=np.int16)
+    np.testing.assert_array_equal(as_mask(x), [False, True, True, True])
+
+
+def test_as_mask_bool_passes_through():
+    x = np.array([True, False])
+    assert as_mask(x) is x
+
+
 from iqaevaluator.segmentation_metrics.volume import v_pred, v_gt, tp, vs, vs_signed
 
 
