@@ -30,13 +30,6 @@ where through-plane errors occur. Without spacing it falls back to the paper's
 voxel/chessboard band. The 2D path is unchanged and stays bit-identical to
 Cheng et al.; a cubic band and a ball-shaped band are not directly comparable,
 so slice-mode and volume-mode scores should not be compared with each other.
-
-Usage: import `metrics` before this module — `metrics` late-imports
-`segmentation_metrics.*`, which import `MetricSpec` back from `metrics`, so
-importing this module first raises a partially-initialized-module error.
-
-    import iqaevaluator.metrics as metrics
-    from iqaevaluator.segmentation_metrics.boundary_iou import BOUNDARY_IOU
 """
 from __future__ import annotations
 
@@ -46,7 +39,7 @@ import numpy as np
 import torch
 from scipy.ndimage import distance_transform_cdt, distance_transform_edt
 
-from iqaevaluator.metrics import MetricSpec, ModeSupport
+from iqaevaluator.metric_spec import MetricSpec, ModeSupport
 from iqaevaluator.segmentation_metrics.volume import as_mask
 
 DEFAULT_DILATION_RATIO = 0.02

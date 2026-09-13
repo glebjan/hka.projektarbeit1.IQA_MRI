@@ -9,11 +9,6 @@ import pytest
 import torch
 
 from iqaevaluator.constants import DREAMSIM_CACHE
-# metrics must be imported before dreamsim_metric: dreamsim_metric imports
-# metrics at its top and metrics imports it back at the bottom, the same
-# deliberate cycle the segmentation_metrics modules use. Importing the metric
-# module first hits it mid-initialisation. Same order as
-# tests/test_segmentation_metrics.py.
 from iqaevaluator.metrics import DEVICE
 from iqaevaluator.dreamsim_metric import (
     INPUT_SIZE,

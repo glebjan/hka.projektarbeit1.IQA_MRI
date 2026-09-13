@@ -1,8 +1,7 @@
 """Volumetric Similarity and voxel counts as registrable metrics.
 
 `volume.py` stays pure NumPy with no framework imports; the MetricSpec wrappers
-live here, which also keeps it out of the circular-import dance the other
-segmentation modules need.
+live here.
 
 VS is registered for BOTH scoring modes on purpose. Per-slice VS is not a broken
 measurement, it is a complementary one: if every slice has the right area the
@@ -18,9 +17,6 @@ touch anywhere still score 1.0. It is only meaningful beside dice.
 direction is "not_ranked". They exist so that a per-slice run can be aggregated
 to correct volume-level numbers by `EvaluationResult.aggregate_volumes()` —
 summing counts and then taking the ratio, never averaging ratios.
-
-Usage: import `metrics` before this module, same as the other segmentation
-metric modules.
 """
 
 from typing import Callable, Optional
@@ -28,7 +24,7 @@ from typing import Callable, Optional
 import numpy as np
 import torch
 
-from iqaevaluator.metrics import MetricSpec, ModeSupport
+from iqaevaluator.metric_spec import MetricSpec, ModeSupport
 from iqaevaluator.segmentation_metrics.volume import tp as _tp
 from iqaevaluator.segmentation_metrics.volume import v_gt as _v_gt
 from iqaevaluator.segmentation_metrics.volume import v_pred as _v_pred

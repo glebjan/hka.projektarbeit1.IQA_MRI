@@ -18,11 +18,12 @@ them to a registry, e.g. `MetricRegistry(PSNR, SSIM)`.
 
 DreamSim is the one built-in that is not pyiqa-backed and not part of
 `BUILTIN_METRICS`: build its spec with `dreamsim_spec(...)` (or use the
-`DREAMSIM` default) and register it explicitly.
+`DREAMSIM` default) and register it explicitly. The description types
+(`MetricSpec`, `ModeSupport`, and friends) live in the dependency-free leaf
+module `metric_spec.py`; this module re-exports them for convenience.
 """
 
-from dataclasses import dataclass, field
-from typing import Callable, Literal, Optional, Protocol, Sequence, runtime_checkable
+from typing import Callable, Literal, Optional
 
 import pyiqa
 import torch
@@ -31,100 +32,21 @@ from iqaevaluator import radimagenet_lpips  # noqa: F401 — registers RadImageN
 from iqaevaluator import clip_iqa_medical   # noqa: F401 — registers ClipIQALung / ClipIQABrain in pyiqa
 
 from iqaevaluator.constants import RESNET50
-
-
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-MetricDirection = Literal["higher_is_better", "lower_is_better", "not_ranked"]
-MetricChannels  = Literal["gray", "rgb"]
-ScoringMode     = Literal["slice", "volume"]
-
-# Duplicated from image_loader.Spacing on purpose: metrics.py must not import
-# image_loader — this is only a structural type alias, not a dependency.
-Spacing = tuple[float, float, float]
-
-REASON_DEEP_2D = (
-    "compares images with a neural network trained on flat 2D pictures, so it "
-    "has no way to see a stack of slices as one 3D body"
+from iqaevaluator.metric_spec import (  # noqa: F401 — re-exported; the public names live here
+    DEVICE, Metric, MetricChannels, MetricDirection, MetricSpec, ModeCapability,
+    ModeSupport, ModeUnsupported, REASON_DEEP_2D, REASON_NO_VOLUME_IMPL,
+    SkippedMetric, Spacing,
 )
-REASON_NO_VOLUME_IMPL = "has no volumetric implementation"
+from iqaevaluator.segmentation_metrics.monai_metrics import (
+    DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY,
+)
+from iqaevaluator.segmentation_metrics.boundary_iou import BOUNDARY_IOU
+from iqaevaluator.segmentation_metrics.volume_metrics import (
+    VS, VS_SIGNED, V_PRED, V_GT, TP,
+)
+from iqaevaluator.dreamsim_metric import DREAMSIM, dreamsim_spec
 
-
-@dataclass(frozen=True)
-class ModeSupport:
-    """The metric can serve this mode; `factory` builds the instance.
-
-    For `slice_mode` the factory takes no argument. For `volume_mode` it takes
-    the image's voxel spacing (`Spacing` or None) — surface-distance metrics
-    need it, the others ignore it.
-    """
-    factory: Callable[..., "Metric"]
-
-
-@dataclass(frozen=True)
-class ModeUnsupported:
-    """The metric cannot serve this mode; `reason` is shown to the user verbatim."""
-    reason: str
-
-
-ModeCapability = ModeSupport | ModeUnsupported
-
-
-@dataclass(frozen=True)
-class SkippedMetric:
-    name:   str
-    reason: str
-
-
-@runtime_checkable
-class Metric(Protocol):
-    """Adapter boundary: anything callable this way can be registered as a metric.
-
-    input/target: batch tensor (N, C, H, W), float32 in [0,1] — the same
-    format ImageLoader.tensor / .rgb_tensor produce. target is None for
-    no-reference metrics. Returns one score per slice in the batch.
-
-    "[0, 1]" is produced by the run's `normalization.Normalizer` (default
-    `MinMax`, per volume; full-reference pairs share the target's range —
-    see `image_loader.load_pair`). A metric therefore never sees absolute
-    intensities; the scale it was given is in the report's `scale_lo/hi`
-    columns. Under the `Raw` strategy the batch keeps its stored dtype —
-    only segmentation metrics are meant to receive that.
-    """
-    def __call__(self, input: torch.Tensor, target: Optional[torch.Tensor] = None) -> Sequence[float]: ...
-
-
-@dataclass(frozen=True)
-class MetricSpec:
-    """Static description of one IQA metric.
-
-    Attributes:
-        name:      metric name (also the ImageEvaluatorRecord field name for builtins).
-        direction: whether a higher or lower score indicates better quality.
-        reference: True for full-reference metrics (need a target image).
-        channels:  "gray" -> use ImageLoader.tensor; "rgb" -> use ImageLoader.rgb_tensor.
-        slice_mode:  ModeSupport (builds the per-slice Metric, lazily, cached by
-                     MetricRegistry) or ModeUnsupported (with a reason) for
-                     per-slice scoring.
-        volume_mode: same, for whole-volume scoring. Defaults to
-                     ModeUnsupported(REASON_NO_VOLUME_IMPL) — most metrics only
-                     implement slice mode.
-        builtin:   True for framework-shipped metrics (dedicated record field);
-                   False for user-registered metrics (stored in record.extra).
-        description: human-readable explanation of what the metric measures,
-                     shown to users choosing a metric.
-        domain:      the domain the metric's defaults are calibrated for,
-                     e.g. "medical (MONAI)". Empty string means domain-agnostic.
-    """
-    name:      str
-    direction: MetricDirection
-    reference: bool
-    channels:  MetricChannels
-    slice_mode:  ModeCapability
-    volume_mode: ModeCapability = ModeUnsupported(REASON_NO_VOLUME_IMPL)
-    builtin:      bool = True
-    description:  str  = ""
-    domain:       str  = ""
+ScoringMode = Literal["slice", "volume"]
 
 
 class PyIQAMetric:
@@ -267,22 +189,6 @@ def _volumetric_iqa_factory(kind: str) -> Callable[[Optional[Spacing]], Metric]:
         return MonaiPSNRMetric() if kind == "psnr" else MonaiSSIMMetric()
 
     return build
-
-
-# Imported here (rather than alongside the other module-level imports above)
-# to avoid a circular import: monai_metrics.py does `from metrics import
-# MetricSpec`, which requires MetricSpec to already be defined in this module.
-from iqaevaluator.segmentation_metrics.monai_metrics import (
-    DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY,
-)
-from iqaevaluator.segmentation_metrics.boundary_iou import BOUNDARY_IOU
-from iqaevaluator.segmentation_metrics.volume_metrics import (
-    VS, VS_SIGNED, V_PRED, V_GT, TP,
-)
-
-# Same cycle, same reason: dreamsim_metric.py does `from metrics import
-# MetricSpec`, so this import has to come after MetricSpec is defined.
-from iqaevaluator.dreamsim_metric import DREAMSIM, dreamsim_spec
 
 
 # Full-reference metrics (need a target image)

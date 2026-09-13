@@ -18,9 +18,8 @@ import SimpleITK as sitk
 import torch
 from PIL import Image
 
+from iqaevaluator.metric_spec import Spacing
 from iqaevaluator.normalization import FixedRange, IntensityRange, MinMax, Normalizer
-
-Spacing = tuple[float, float, float]
 
 
 @dataclass(frozen=True)

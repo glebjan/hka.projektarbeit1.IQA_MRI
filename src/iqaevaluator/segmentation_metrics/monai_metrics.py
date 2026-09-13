@@ -51,7 +51,7 @@ from monai.metrics import (
     compute_surface_dice,
 )
 
-from iqaevaluator.metrics import MetricSpec, ModeSupport, Spacing
+from iqaevaluator.metric_spec import MetricSpec, ModeSupport, Spacing
 
 DOMAIN_MEDICAL = "medical (MONAI)"
 
