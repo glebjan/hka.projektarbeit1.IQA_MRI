@@ -124,7 +124,8 @@ _F2 = (
 _F4 = (
     "Kirillov 2019 Eq. 1: PQ = sum_TP IoU / (|TP| + 0.5|FP| + 0.5|FN|). GT1 vs Pred1: overlap 12, union 20, "
     "IoU 0.6 > 0.5 -> TP; GT2 unmatched -> FN; Pred3 unmatched -> FP. PQ = 0.6 / (1 + 0.5 + 0.5) = 0.3 "
-    "(SQ 0.6, RQ 0.5). MONAI adds smooth_numerator=1e-6 to the denominator -> 0.29999986; tolerance 1e-6."
+    "(SQ 0.6, RQ 0.5). MONAI adds smooth_numerator=1e-6 to the denominator -> 0.6 / 2.000001 = 0.29999985 "
+    "(0.29999986 in float32); tolerance 1e-6."
 )
 _F5 = (
     "Band width: 0.02*|(24, 40, 40)| = 1.229 mm < max(spacing) = 3 mm -> floor 3.0 mm. Inside an axis-aligned box the "

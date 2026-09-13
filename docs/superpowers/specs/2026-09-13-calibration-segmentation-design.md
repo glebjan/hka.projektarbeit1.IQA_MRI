@@ -367,7 +367,8 @@ since > 0.5), no counterpart for GT 2 (FN), instance 3 = `[12:16, 0:4]` (no
 overlap, FP). Kirillov et al. 2019, Eq. 1:
 PQ = Σ_TP IoU / (|TP| + ½|FP| + ½|FN|) = 0.6 / (1 + 0.5 + 0.5) = **0.3**
 (SQ = 0.6, RQ = 0.5). MONAI adds `smooth_numerator=1e-6` to the denominator,
-so the framework reports 0.29999986: the case carries `tolerance=1e-6` and
+so the exact value is 0.6 / 2.000001 = 0.29999985 (the framework's float32
+result prints as 0.29999986): the case carries `tolerance=1e-6` and
 the derivation names the term. The `panopticapi` adapter writes both maps as
 `id2rgb` PNGs into a temporary directory and calls `pq_compute_single_core`
 with a two-category set; background must be encoded as a **stuff** segment
