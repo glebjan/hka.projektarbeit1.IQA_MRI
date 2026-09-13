@@ -165,6 +165,22 @@ class TestMonaiPanopticQualityMetric:
         with pytest.raises(ValueError, match=r"Mask\(\).*Raw\(\)"):
             metric(soft, soft)
 
+    def test_multi_channel_input_is_rejected(self):
+        """Same D6 contract as the other adapters: channel 1 must not be
+        silently dropped by scoring channel 0 only."""
+        two_channels = torch.zeros(1, 2, 8, 8)
+        two_channels[0, 1, :4, :4] = 1.0
+        with pytest.raises(ValueError, match=r"panoptic_quality.*Mask\(label="):
+            MonaiPanopticQualityMetric()(two_channels, two_channels.clone())
+
+    @pytest.mark.parametrize("bad", [float("inf"), float("-inf")])
+    def test_rejects_infinite_values(self, bad):
+        inst = torch.zeros(1, 1, 8, 8)
+        inst[0, 0, :3, :3] = 1.0
+        inst[0, 0, 7, 7] = bad
+        with pytest.raises(ValueError, match="integer-valued"):
+            MonaiPanopticQualityMetric()(inst, inst.clone())
+
     def test_accepts_raw_instance_maps(self):
         inst = torch.zeros((1, 1, 8, 8), dtype=torch.int16)
         inst[0, 0, :3, :3] = 1
@@ -331,7 +347,8 @@ class TestMonaiSegmentationMetricContract:
 ])
 @pytest.mark.parametrize("stale", ["threshold", "label"])
 def test_builders_reject_the_removed_knobs_loudly(builder, stale):
-    with pytest.raises(TypeError, match=stale):
+    """The message names the builder the caller actually wrote."""
+    with pytest.raises(TypeError, match=rf"{builder.__name__}\(\) no longer takes '{stale}'"):
         builder(**{stale: 0.5})
 
 

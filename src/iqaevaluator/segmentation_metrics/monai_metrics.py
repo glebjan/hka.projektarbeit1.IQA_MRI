@@ -21,8 +21,9 @@ One class per run: MONAI's underlying functionals accept one-hot `(N, C, ...)`
 batches, but this adapter enforces `C == 1` and rejects anything wider with a
 `ValueError` — there is no one-hot / multi-channel path. A multi-label
 dataset is scored one class at a time via `Mask(label=k)`, not by stacking
-classes into channels. The one exception is `panoptic_quality`, whose integer
-instance maps are a different input shape entirely (see its class docstring).
+classes into channels. That includes `panoptic_quality`: it takes the same
+`(N, 1, H, W)` batch, with integer-valued rather than strictly binary values
+(see its class docstring).
 
 MONAI's defaults are calibrated for the medical-imaging domain (physical voxel
 spacing in millimetres, a background-class convention). Domain parameters are
@@ -192,11 +193,14 @@ def _monai_spec(
     uses_spacing: bool,
     description: str,
     defaults: dict,
+    builder: str,
     **monai_kwargs,
 ) -> MetricSpec:
     """One MetricSpec for one MONAI functional; `defaults` are the domain
-    defaults a caller's `monai_kwargs` may override."""
-    _reject_removed_knobs(f"{name}_metric()", monai_kwargs)
+    defaults a caller's `monai_kwargs` may override. `builder` is the public
+    builder's name, so a stale keyword's TypeError points at the call the
+    user actually wrote."""
+    _reject_removed_knobs(f"{builder}()", monai_kwargs)
     kwargs = {**defaults, **monai_kwargs}
     metric = MonaiSegmentationMetric(compute_fn, one_sided=one_sided, name=name, **kwargs)
     return MetricSpec(
@@ -232,7 +236,7 @@ def dice_metric(**monai_kwargs) -> MetricSpec:
     """
     return _monai_spec(
         "dice", compute_dice, direction="higher_is_better", one_sided=0.0, uses_spacing=False,
-        defaults={"include_background": True, "ignore_empty": False},
+        defaults={"include_background": True, "ignore_empty": False}, builder="dice_metric",
         description=(
             "Dice similarity coefficient: overlap between predicted and "
             "ground-truth segmentation masks (1.0 = perfect overlap, 0.0 = no "
@@ -270,6 +274,7 @@ def hausdorff95_metric(**monai_kwargs) -> MetricSpec:
     return _monai_spec(
         "hausdorff95", compute_hausdorff_distance, direction="lower_is_better", one_sided=None,
         uses_spacing=True, defaults={"include_background": True, "percentile": 95},
+        builder="hausdorff95_metric",
         description=(
             "95th-percentile Hausdorff Distance: how far the predicted "
             "segmentation boundary is from the ground-truth boundary in the "
@@ -313,6 +318,7 @@ def normalized_surface_dice_metric(**monai_kwargs) -> MetricSpec:
     return _monai_spec(
         "nsd", compute_surface_dice, direction="higher_is_better", one_sided=0.0,
         uses_spacing=True, defaults={"include_background": True, "class_thresholds": [1.0]},
+        builder="normalized_surface_dice_metric",
         description=(
             "Normalized Surface Dice: fraction of the predicted and "
             "ground-truth boundaries that lie within a tolerance distance of "
@@ -346,6 +352,7 @@ def average_surface_distance_metric(**monai_kwargs) -> MetricSpec:
     return _monai_spec(
         "assd", compute_average_surface_distance, direction="lower_is_better", one_sided=None,
         uses_spacing=True, defaults={"include_background": True, "symmetric": True},
+        builder="average_surface_distance_metric",
         description=(
             "Average Symmetric Surface Distance: mean distance between the "
             "predicted and ground-truth boundaries, averaged in both "
@@ -367,10 +374,11 @@ class MonaiPanopticQualityMetric:
     instance-label map per image (no batch/channel dim, unlike the other four
     metrics) — this loops over the batch itself.
 
-    Accepts integer-valued tensors only: `{0, 1}` from `Mask()` (a binary mask
-    is scored as single-instance PQ, foreground = one instance) or an instance
-    map with one integer id per object loaded with `Raw()`. The empty-mask
-    policy is Dice's: one side empty → 0.0, both empty → None.
+    Accepts finite, integer-valued, single-channel (`C == 1`) tensors only:
+    `{0, 1}` from `Mask()` (a binary mask is scored as single-instance PQ,
+    foreground = one instance) or an instance map with one integer id per
+    object loaded with `Raw()`. The empty-mask policy is Dice's: one side
+    empty → 0.0, both empty → None.
     """
 
     def __init__(self, **monai_kwargs):
@@ -380,9 +388,9 @@ class MonaiPanopticQualityMetric:
     @staticmethod
     def _require_integer_valued(t: torch.Tensor) -> None:
         f = t.float()
-        if not bool((f == f.round()).all()):
+        if not bool((torch.isfinite(f) & (f == f.round())).all()):
             raise ValueError(
-                "panoptic_quality expects integer-valued instance maps: load binary "
+                "panoptic_quality expects finite, integer-valued instance maps: load binary "
                 "masks with normalization.Mask() and instance maps with normalization.Raw()"
             )
 
@@ -391,6 +399,8 @@ class MonaiPanopticQualityMetric:
             raise ValueError("'panoptic_quality' compares two masks and requires a target mask")
         self._require_integer_valued(input)
         self._require_integer_valued(target)
+        require_single_channel(input, metric="panoptic_quality")
+        require_single_channel(target, metric="panoptic_quality")
         scores: list[Optional[float]] = []
         for i in range(input.shape[0]):
             pred_map = input[i, 0].long()
