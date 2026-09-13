@@ -7,7 +7,7 @@ from iqaevaluator.evaluation_result import EvaluationResult, _EvaluatedImage
 from iqaevaluator.evaluator_factory import build_evaluator
 from iqaevaluator.image_loader import ImageLoader, find_matching_target, list_images, load_pair
 from iqaevaluator.normalization import (  # noqa: F401 — re-exported for users
-    NORMALIZER_NAMES, MinMax, Normalizer, Percentile, Raw, normalizer_from_name,
+    NORMALIZER_NAMES, Mask, MinMax, Normalizer, Percentile, Raw, normalizer_from_name,
 )
 from iqaevaluator.metrics import (  # noqa: F401 — re-exported for users
     DEVICE, Metric, MetricSpec, MetricRegistry, ScoringMode, SkippedMetric,

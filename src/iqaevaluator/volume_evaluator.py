@@ -12,6 +12,8 @@ Two deliberate differences from the slice path:
   measuring edges that do not exist.
 - Metrics are built per image geometry, because HD95, ASSD, NSD and Boundary IoU
   need the voxel spacing to return physical distances.
+- `is_empty` is never set: the flag describes a skipped slice, and a volume row
+  is never skipped.
 
 None of IQAEvaluator's computation is reused. `run_evaluation` is replaced
 outright, and the work it calls — `_compute_volume`, `_pick_volume` — is defined
@@ -105,7 +107,6 @@ class VolumeEvaluator(IQAEvaluator):
             mode="full_reference" if has_target else "no_reference",
             scoring="volume",
             slice_index=None,
-            is_empty=bool(self.input.empty_slice_mask.all().item()),
             **self._scale_fields(),
         )
 

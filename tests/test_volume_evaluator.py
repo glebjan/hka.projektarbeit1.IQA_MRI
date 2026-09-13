@@ -160,3 +160,14 @@ class TestScaleFieldsInVolumeMode:
         assert rec.normalization == "minmax"
         assert (rec.scale_lo, rec.scale_hi) == (loader.raw_range.lo, loader.raw_range.hi)
         assert (rec.input_min, rec.input_max) == (loader.raw_range.lo, loader.raw_range.hi)
+
+
+class TestVolumeRowsHaveNoEmptyFlag:
+    def test_all_zero_input_is_not_flagged_empty(self, tmp_path: Path, spy_registry):
+        import nibabel as nib
+
+        registry, _, _ = spy_registry
+        p = tmp_path / "blank.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros((8, 10, 6), dtype="float32"), np.diag([1.0, 1.0, 1.2, 1.0])), p)
+        record = VolumeEvaluator(ImageLoader(p), None, registry).run_evaluation()[0]
+        assert record.is_empty is False

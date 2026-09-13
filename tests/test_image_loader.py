@@ -24,7 +24,7 @@ from iqaevaluator.image_loader import (
     _shared_prefix_length,
     load_pair,
 )
-from iqaevaluator.normalization import IntensityRange, MinMax, Percentile, Raw
+from iqaevaluator.normalization import IntensityRange, Mask, MinMax, Percentile, Raw
 
 IMG_SIZE = 96  # must match tests/conftest.py
 
@@ -430,6 +430,52 @@ class TestImageLoader:
         assert ImageLoader(synthetic_png).normalizer == MinMax()
 
 
+class TestMaskLoading:
+    def test_png_0_255_and_nifti_0_1_give_identical_tensors(self, tmp_path):
+        arr = np.zeros((16, 16), dtype=np.uint8)
+        arr[4:12, 4:12] = 1
+        png = tmp_path / "m.png"
+        Image.fromarray(arr * 255).save(png)
+        nii = tmp_path / "m.nii"
+        nib.save(nib.Nifti1Image(arr[:, :, None], np.eye(4)), str(nii))
+        a, b = ImageLoader(png, Mask()).tensor, ImageLoader(nii, Mask()).tensor
+        assert a.shape == b.shape == (1, 1, 16, 16)
+        assert torch.equal(a, b)
+        assert a.dtype == torch.float32 and float(a.sum()) == 64.0
+
+    def test_label_selects_one_class_through_the_loader(self, tmp_path):
+        labels = np.zeros((8, 8, 2), dtype=np.int16)
+        labels[:4, :, 0] = 1
+        labels[4:, :, 1] = 2
+        p = tmp_path / "labels.nii"
+        nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p))
+        assert float(ImageLoader(p, Mask(label=2)).tensor.sum()) == 32.0
+        assert float(ImageLoader(p, Mask()).tensor.sum()) == 64.0
+
+    def test_float_map_outside_unit_interval_names_the_file(self, tmp_path):
+        p = tmp_path / "logits.nii"
+        nib.save(nib.Nifti1Image(np.full((4, 4, 1), 3.0, dtype=np.float32), np.eye(4)), str(p))
+        with pytest.raises(ValueError, match="logits.nii"):
+            ImageLoader(p, Mask()).tensor
+
+    def test_empty_slice_mask_is_exact_under_mask(self, tmp_path):
+        vol = np.zeros((32, 32, 3), dtype=np.uint8)
+        vol[5, 5, 1] = 1
+        p = tmp_path / "one_voxel.nii"
+        nib.save(nib.Nifti1Image(vol, np.eye(4)), str(p))
+        assert ImageLoader(p, Mask()).empty_slice_mask.tolist() == [True, False, True]
+        assert ImageLoader(p, Mask(label=2)).empty_slice_mask.tolist() == [True, True, True]
+
+    def test_intensity_range_is_none_and_raw_range_survives(self, tmp_path):
+        arr = np.zeros((8, 8), dtype=np.uint8)
+        arr[2:4, 2:4] = 255
+        p = tmp_path / "m.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p, Mask())
+        assert loader.intensity_range is None
+        assert loader.raw_range == IntensityRange(0.0, 255.0)
+
+
 # ---------------------------------------------------------------------------
 # load_pair
 # ---------------------------------------------------------------------------
@@ -497,3 +543,23 @@ class TestLoadPair:
         assert "not constant" in out          # the message is explicit instead
         assert "degenerate" in out
         assert loaded_tgt.intensity_range == IntensityRange(500.0, 500.0)
+
+    def test_mask_pair_binarizes_each_side_independently(self, tmp_path):
+        # Review 3.1: a 0/1 NIfTI prediction against a 0/255 PNG reference.
+        arr = np.zeros((16, 16), dtype=np.uint8)
+        arr[4:12, 4:12] = 1
+        pred = tmp_path / "case_pred.nii"
+        nib.save(nib.Nifti1Image(arr[:, :, None], np.eye(4)), str(pred))
+        gt = tmp_path / "case_gt.png"
+        Image.fromarray(arr * 255).save(gt)
+        inp, tgt = load_pair(pred, gt, Mask())
+        assert inp.normalizer == Mask() and tgt.normalizer == Mask()
+        assert torch.equal(inp.tensor, tgt.tensor)
+
+    def test_raw_pair_is_not_wrapped_in_a_fixed_range(self, tmp_path):
+        labels = np.zeros((8, 8, 2), dtype=np.int16); labels[:4] = 1
+        p1 = tmp_path / "a.nii"; p2 = tmp_path / "b.nii"
+        nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p1))
+        nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p2))
+        inp, _ = load_pair(p1, p2, Raw())
+        assert inp.normalizer == Raw()

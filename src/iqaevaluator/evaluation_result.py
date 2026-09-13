@@ -91,9 +91,10 @@ class EvaluationResult:
         A count is missing only when the metric raised on that slice (see
         `IQAEvaluator`). Nothing about the slice is known then, so all three
         counts stay NaN and the volume's totals come out NaN; a warning names
-        the affected volumes. Slices flagged `is_empty` are blank on both
-        sides — `IQAEvaluator` only skips a slice when input and target are
-        both empty — so their counts are real zeros and are filled in as such.
+        the affected volumes. Slices flagged `is_empty` hold zero foreground
+        voxels on both sides — under `Mask()` that is an exact count, and
+        `IQAEvaluator` only skips a slice when input and target are both
+        empty — so their counts are real zeros and are filled in as such.
         One incomplete volume does not invalidate the rest of the report, so
         this never raises for that reason.
 

@@ -392,3 +392,30 @@ class TestFullReferenceEmptiness:
         inp._loaded.raw[0] = 0.0
         records = IQAEvaluator(inp, None, MetricRegistry()).run_evaluation()
         assert records[0].is_empty is True
+
+
+class TestMaskRunEndToEnd:
+    def test_perfect_prediction_scores_dice_and_vs_one(self, tmp_path):
+        """Review 3.1 failure case: 0/1 NIfTI prediction vs 0/255 PNG reference."""
+        import nibabel as nib
+        from PIL import Image
+        from iqaevaluator.normalization import Mask
+        from iqaevaluator.image_loader import load_pair
+        from iqaevaluator.segmentation_metrics.monai_metrics import DICE
+        from iqaevaluator.segmentation_metrics.volume_metrics import VS
+
+        arr = np.zeros((32, 32), dtype=np.uint8)
+        arr[8:24, 8:24] = 1
+        pred = tmp_path / "case_pred.nii"
+        nib.save(nib.Nifti1Image(arr[:, :, None], np.eye(4)), str(pred))
+        gt = tmp_path / "case_gt.png"
+        Image.fromarray(arr * 255).save(gt)
+
+        inp, tgt = load_pair(pred, gt, Mask())
+        records = IQAEvaluator(inp, tgt, MetricRegistry(DICE, VS)).run_evaluation()
+        assert len(records) == 1
+        assert records[0].extra["dice"] == pytest.approx(1.0)
+        assert records[0].extra["vs"] == pytest.approx(1.0)
+        assert records[0].normalization == "mask"
+        assert records[0].scale_lo is None and records[0].scale_hi is None
+        assert (records[0].input_min, records[0].input_max) == (0.0, 1.0)

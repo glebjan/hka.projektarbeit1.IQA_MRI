@@ -18,7 +18,7 @@ import SimpleITK as sitk
 import torch
 from PIL import Image
 
-from iqaevaluator.normalization import FixedRange, IntensityRange, MinMax, Normalizer, scale
+from iqaevaluator.normalization import FixedRange, IntensityRange, MinMax, Normalizer
 
 Spacing = tuple[float, float, float]
 
@@ -216,7 +216,8 @@ class ImageLoader:
 
     `normalizer` decides what `[0, 1]` stands for in `.tensor`. The default,
     `MinMax()`, scales the image's own extremes. For a full-reference pair use
-    `load_pair()`, which puts the input on the target's scale.
+    `load_pair()`, which puts the input on the target's scale when the
+    strategy produces one.
     """
 
     def __init__(self, path: Path, normalizer: Normalizer = MinMax()):
@@ -256,9 +257,10 @@ class ImageLoader:
 
     @property
     def tensor(self) -> torch.Tensor:
-        """(D, 1, H, W); float32 in [0, 1] under every strategy except `Raw()` and `FixedRange(None)`, which leave the data unscaled."""
+        """(D, 1, H, W). float32 in [0, 1] under every strategy except `Raw()`
+        (dtype preserved, unscaled); exactly {0.0, 1.0} under `Mask()`."""
         if self._tensor is None:
-            self._tensor = scale(self.raw, self.intensity_range, label=self.path.name).unsqueeze(1)
+            self._tensor = self.normalizer.apply(self.raw, source=self.path.name).unsqueeze(1)
         return self._tensor
 
     @property
@@ -277,37 +279,12 @@ class ImageLoader:
 
     @property
     def empty_slice_mask(self) -> torch.Tensor:
-        """True for slices with (almost) no content; computed on the raw data.
+        """True for slices with nothing to score, as the strategy defines it.
 
-        A slice is empty when its spread is below 0.1 % of the volume's
-        intensity span, or (ordinary intensity images only, see below) its
-        lift above the volume floor is below that same 0.1 %. The span is
-        measured between the 0.5th and 99.5th percentiles, so one spike voxel
-        cannot shrink it and mark healthy slices empty. For a volume whose
-        foreground is rarer than 0.5 % (a small lesion mask) the percentile
-        span collapses to zero and the extremes are used instead — and in
-        that fallback regime the lift test is skipped entirely. A sparse
-        binary mask's foreground mean sits, by construction, only a tiny
-        fraction of the way from floor to ceiling, so the lift test would
-        re-flag the very slice the extremes fallback exists to rescue; the
-        spread test alone is meaningful there. A constant volume has no span
-        at all and every slice counts as empty.
+        Intensity strategies use `normalization.sparse_slices` (a spread/lift
+        heuristic on the raw data); `Mask()` counts foreground voxels exactly.
         """
-        raw = self.raw.astype(np.float32, copy=False)
-        lo, hi = (float(v) for v in np.percentile(raw, [0.5, 99.5]))
-        used_extremes = hi <= lo
-        if used_extremes:
-            lo, hi = float(raw.min()), float(raw.max())
-        span = hi - lo
-        if span <= 0.0:
-            return torch.ones(raw.shape[0], dtype=torch.bool)
-        flat = raw.reshape(raw.shape[0], -1)
-        std  = flat.std(axis=1)
-        empty = std < 1e-3 * span
-        if not used_extremes:
-            lift = flat.mean(axis=1) - lo
-            empty = empty | (lift < 1e-3 * span)
-        return torch.from_numpy(empty)
+        return self.normalizer.empty_slices(self.raw)
 
     def log_tensor_shape(self) -> torch.Size:
         shape = self.tensor.shape
@@ -320,19 +297,22 @@ def load_pair(
     target_path: Path,
     normalizer: Normalizer = MinMax(),
 ) -> tuple[ImageLoader, ImageLoader]:
-    """Load a full-reference pair on ONE scale — the target's.
+    """Load a full-reference pair on ONE scale — the target's — when there is one.
 
-    The target is scaled by `normalizer`; the input is then scaled by the
-    range the target produced, so a prediction that is uniformly too bright
+    The target is scaled by `normalizer`; if that produced a range, the input
+    is scaled by the same range, so a prediction that is uniformly too bright
     or too flat is measured as such instead of being normalized away
     (fastMRI's convention: `data_range` comes from the reference). Anything
     outside the target's range is clipped to [0, 1] in the input; the raw
     extremes remain visible as `ImageLoader.raw_range`.
 
-    Under `Raw()` the target yields no range and the input stays raw too.
+    Under `Mask()` and `Raw()` the target yields no range and both sides are
+    loaded with `normalizer` itself, independently — a 0/1 prediction against
+    a 0/255 reference binarizes to the same tensor.
 
     Returns `(input, target)`.
     """
     target = ImageLoader(target_path, normalizer)
-    inp = ImageLoader(input_path, FixedRange(target.intensity_range, name=normalizer.name))
-    return inp, target
+    rng = target.intensity_range
+    input_normalizer = normalizer if rng is None else FixedRange(rng, name=normalizer.name)
+    return ImageLoader(input_path, input_normalizer), target
