@@ -17,11 +17,18 @@ empty, Dice/NSD/PQ score 0.0 and HD95/ASSD are `None` (no finite distance
 exists); with both sides empty every score is `None`. MONAI's own answers for
 those cases (NaN, inf, or Dice 1.0) never reach a record.
 
+One class per run: MONAI's underlying functionals accept one-hot `(N, C, ...)`
+batches, but this adapter enforces `C == 1` and rejects anything wider with a
+`ValueError` — there is no one-hot / multi-channel path. A multi-label
+dataset is scored one class at a time via `Mask(label=k)`, not by stacking
+classes into channels. The one exception is `panoptic_quality`, whose integer
+instance maps are a different input shape entirely (see its class docstring).
+
 MONAI's defaults are calibrated for the medical-imaging domain (physical voxel
 spacing in millimetres, a background-class convention). Domain parameters are
 forwarded unchanged via `**monai_kwargs`; each builder's docstring states
 which ones matter in another domain (materials science: different physical
-units via `spacing`, different class counts via `class_thresholds`).
+units via `spacing`).
 
 Usage: each builder (`dice_metric()`, `hausdorff95_metric()`, ...) returns a
 `MetricSpec` — pass one or more into `MetricRegistry(*specs)` and hand that
@@ -75,15 +82,17 @@ class MonaiSegmentationMetric:
     """Adapter for MONAI's one-hot-batch functional metrics (Dice, HD95, NSD, ASSD).
 
     All four share the call signature `compute_fn(y_pred, y, **kwargs) -> (N, C)`
-    tensor (batch x class channels); this adapter averages across the class
-    dimension (NaN-aware) to produce one score per sample, matching the
-    Metric protocol.
+    tensor (batch x class channels); MONAI's own signature is one-hot, but
+    this adapter requires `C == 1` (a `ValueError` names the metric and
+    points to `Mask(label=k)` otherwise) and produces one score per sample,
+    matching the Metric protocol.
 
-    Both tensors must be binary (`require_binary`); the empty-mask policy is
-    applied per sample before MONAI sees anything, with `one_sided` as the
-    score for exactly-one-side-empty (0.0 for Dice/NSD, None for HD95/ASSD).
-    A NaN or inf that MONAI still returns for a populated pair is recorded as
-    None and printed as a warning — an unexpected case must not be silent.
+    Both tensors must be binary (`require_binary`) and single-channel; the
+    empty-mask policy is applied per sample before MONAI sees anything, with
+    `one_sided` as the score for exactly-one-side-empty (0.0 for Dice/NSD,
+    None for HD95/ASSD). A NaN or inf that MONAI still returns for a
+    populated pair is recorded as None and printed as a warning — an
+    unexpected case must not be silent.
 
     In volume mode the adapter receives a single `(1, C, D, H, W)` sample and
     returns a single score; the distance metrics additionally receive
@@ -109,6 +118,13 @@ class MonaiSegmentationMetric:
             raise ValueError(f"'{self._name}' compares two masks and requires a target mask")
         require_binary(input, metric=self._name)
         require_binary(target, metric=self._name)
+        if input.shape[1] > 1 or target.shape[1] > 1:
+            raise ValueError(
+                f"{self._name} scores one class per run: this adapter has no "
+                "one-hot / multi-channel path — pass a single-channel mask "
+                "and select one class at a time with normalization.Mask(label=k) "
+                "instead of stacking classes into channels."
+            )
         # MONAI 1.6.0 happens to accept integer input; that is an implementation
         # detail of a third-party library, so the adapter guarantees floats itself.
         y_pred, y = input.float(), target.float()
@@ -205,16 +221,18 @@ def _monai_spec(
 def dice_metric(**monai_kwargs) -> MetricSpec:
     """Dice similarity coefficient: 2*|pred ∩ gt| / (|pred| + |gt|), 1.0 = perfect overlap.
 
-    Input must be binary — load masks with `Mask()`. Domain: medical (MONAI).
-    Defaults assume a single foreground mask channel (include_background=True,
-    since there is nothing else to include) and `ignore_empty=False`, so an
-    empty reference with a non-empty prediction scores 0.0 (the empty-mask
-    policy decides these cases anyway).
+    Input must be binary and single-channel — load masks with `Mask()`
+    (`Mask(label=k)` for one class of a multi-label dataset). Domain: medical
+    (MONAI). Defaults assume that single foreground channel
+    (include_background=True, since there is nothing else to include) and
+    `ignore_empty=False`, so an empty reference with a non-empty prediction
+    scores 0.0 (the empty-mask policy decides these cases anyway).
 
     Args:
-        include_background (kwarg, default True): if False, drops channel 0
-            (assumed background class) before scoring — only meaningful for
-            multi-channel one-hot input.
+        include_background (kwarg, default True): forwarded to MONAI; with
+            the single-channel input this adapter requires there is no
+            separate background channel to drop, so leave this at the
+            default unless you have a specific reason to change it.
         **monai_kwargs: forwarded verbatim to `monai.metrics.compute_dice`.
     """
     return _monai_spec(
@@ -223,10 +241,9 @@ def dice_metric(**monai_kwargs) -> MetricSpec:
         description=(
             "Dice similarity coefficient: overlap between predicted and "
             "ground-truth segmentation masks (1.0 = perfect overlap, 0.0 = no "
-            "overlap). Domain: medical (MONAI). For other domains (e.g. "
-            "materials-science multi-phase segmentation), pass a multi-channel "
-            "one-hot mask and set include_background=False to exclude a real "
-            "background class."
+            "overlap). Domain: medical (MONAI). Scores one class per run — "
+            "for a multi-label dataset, load each class in turn with "
+            "Mask(label=k)."
         ),
         **monai_kwargs,
     )
@@ -291,8 +308,10 @@ def normalized_surface_dice_metric(**monai_kwargs) -> MetricSpec:
 
     Args:
         include_background (kwarg, default True): if False, drops channel 0.
-        class_thresholds (kwarg, default [1.0]): per-class tolerance distance,
-            one entry per class channel, in the units of `spacing`.
+        class_thresholds (kwarg, default [1.0]): the tolerance distance for
+            the single foreground channel this adapter requires, in the
+            units of `spacing`. MONAI takes this as a list; keep it to one
+            entry.
         spacing (kwarg, default None): physical size of one voxel.
         **monai_kwargs: forwarded verbatim to `monai.metrics.compute_surface_dice`.
     """
@@ -304,11 +323,9 @@ def normalized_surface_dice_metric(**monai_kwargs) -> MetricSpec:
             "ground-truth boundaries that lie within a tolerance distance of "
             "each other (1.0 = all boundary points within tolerance). Domain: "
             "medical (MONAI). Tolerance is set via `class_thresholds` "
-            "(default 1 voxel per class) and interpreted in the units of "
-            "`spacing`; for another domain (e.g. materials micrographs) set "
-            "both to that domain's physical voxel size and acceptable "
-            "boundary error, and add one threshold per class for multi-class "
-            "masks."
+            "(default 1 voxel) and interpreted in the units of `spacing`; for "
+            "another domain (e.g. materials micrographs) set both to that "
+            "domain's physical voxel size and acceptable boundary error."
         ),
         **monai_kwargs,
     )

@@ -283,6 +283,15 @@ class TestMonaiSegmentationMetricContract:
         with pytest.raises(ValueError, match="target"):
             MonaiSegmentationMetric(compute_dice, one_sided=0.0)(torch.ones(1, 1, 4, 4))
 
+    def test_multi_channel_input_is_rejected(self):
+        """No one-hot / multi-channel path (spec D6): score one class per run
+        via Mask(label=k) instead of stacking classes into channels."""
+        from monai.metrics import compute_dice
+        metric = MonaiSegmentationMetric(compute_dice, one_sided=0.0, name="dice", include_background=True)
+        one_hot = torch.zeros(1, 2, 8, 8)
+        with pytest.raises(ValueError, match=r"Mask\(label="):
+            metric(one_hot, one_hot.clone())
+
     def test_one_sided_empty_uses_the_policy_value(self):
         from monai.metrics import compute_dice, compute_hausdorff_distance
         pred = torch.zeros(2, 1, 8, 8); pred[0, 0, 2:5, 2:5] = 1.0     # sample 0: gt empty; sample 1: both populated
