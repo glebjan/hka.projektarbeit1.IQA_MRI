@@ -230,13 +230,13 @@ class FixedRange(_RangeBased):
 
 @dataclass(frozen=True)
 class Raw(_RangeBased):
-    """No scaling. Use for masks and label maps.
+    """No scaling. Segmentation masks belong to `Mask()`, not here.
 
-    The decoded dtype survives, so an integer label map reaches the
-    segmentation metrics as integers and `as_mask(label=...)` can select one
-    label. Segmentation masks belong to `Mask()`; `Raw()` is for panoptic-
-    quality instance maps and for callers that need the stored values
-    untouched.
+    The decoded dtype survives, so an integer instance map reaches
+    `panoptic_quality` with its ids intact and the plain numpy functions in
+    `volume.py` can still select one label via `as_mask(label=...)`. Use
+    `Raw()` for panoptic-quality instance maps and for callers that need the
+    stored values untouched.
     """
     name: str = "raw"
 
@@ -248,14 +248,20 @@ class Raw(_RangeBased):
 class Mask:
     """Binarize at load time: the one foreground policy for segmentation runs.
 
-    Integer and bool arrays: every non-zero value is foreground when `label`
-    is None (a 0/255 PNG and a 0/1 NIfTI come out identical); `label=k`
-    keeps only `== k`, so a multi-class map is scored one label per run.
-    Float arrays are probability maps and are cut at `threshold`; values
-    outside [0, 1] raise. The tensor is float32 with values in exactly
-    {0.0, 1.0}, and a slice is empty iff it holds no foreground voxel —
-    an exact count, not the intensity heuristic. Nothing is scaled, so the
-    report's `scale_lo/hi` stay empty and `range_of` is None.
+    Label maps (integer arrays, and float arrays holding only finite, whole,
+    non-negative values, such as a DICOM mask, which always decodes to
+    float32): every non-zero value is foreground when `label` is None (a
+    0/255 PNG and a 0/1 NIfTI come out identical); `label=k` keeps only
+    `== k`, so a multi-class map is scored one label per run. Bool arrays are
+    taken as they are. Any other float array is a probability map and is cut
+    at `threshold`; values outside [0, 1] raise, and so does `label`, which a
+    probability map cannot honour. The rule itself is `volume.as_mask`, so
+    `Mask()` and the numpy metrics binarize identically.
+
+    The tensor is float32 with values in exactly {0.0, 1.0}, and a slice is
+    empty iff it holds no foreground voxel — an exact count, not the
+    intensity heuristic. Nothing is scaled, so the report's `scale_lo/hi`
+    stay empty and `range_of` is None.
     """
     label: Optional[int] = None
     threshold: float = 0.5

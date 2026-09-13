@@ -20,16 +20,30 @@ def as_mask(x: np.ndarray, label: Optional[int] = None, threshold: float = 0.5) 
     `Mask()` produces).
 
     - bool array: returned unchanged.
-    - float array: values must lie in [0, 1] (probabilities); thresholded
-      at `threshold`. Values outside [0, 1] raise ValueError — this usually
-      means raw logits were passed without a sigmoid activation.
-    - integer array (label map): every non-zero value is foreground when
-      `label is None`; otherwise one-vs-rest via `x == label`. A 0/255 PNG
-      mask and a 0/1 NIfTI mask therefore binarize identically.
+    - label map: an integer array, or a float array whose values are all
+      finite, whole numbers and >= 0 (DICOM masks always decode to float32,
+      and float NRRD/MHA label maps exist). Every non-zero value is
+      foreground when `label is None`; otherwise one-vs-rest via
+      `x == label`. A 0/255 PNG mask and a 0/1 NIfTI mask therefore binarize
+      identically, whatever dtype they were stored in.
+    - any other float array is a probability map: values must lie in
+      [0, 1] and are thresholded at `threshold`. Values outside [0, 1] raise
+      ValueError — this usually means raw logits were passed without a
+      sigmoid activation. `label` needs a label map, so passing it with a
+      probability map raises ValueError too instead of being ignored.
     """
     if x.dtype == bool:
         return x
     if np.issubdtype(x.dtype, np.floating):
+        if _is_float_label_map(x):
+            return x != 0 if label is None else x == label
+        if label is not None:
+            raise ValueError(
+                f"as_mask got label={label}, which selects one class of an "
+                "integer-valued label map, but this float array holds "
+                "fractional, negative or non-finite values (a probability "
+                "map?). Drop label to threshold it, or pass a label map."
+            )
         x_min, x_max = float(x.min()), float(x.max())
         if x_min < 0.0 or x_max > 1.0:
             raise ValueError(
@@ -41,6 +55,11 @@ def as_mask(x: np.ndarray, label: Optional[int] = None, threshold: float = 0.5) 
     if np.issubdtype(x.dtype, np.integer):
         return x != 0 if label is None else x == label
     raise TypeError(f"as_mask does not support dtype {x.dtype}")
+
+
+def _is_float_label_map(x: np.ndarray) -> bool:
+    """True when a float array holds only finite, whole, non-negative values."""
+    return bool(np.isfinite(x).all() and (x == np.round(x)).all() and x.min() >= 0)
 
 
 # ---------------------------------------------------------------------------

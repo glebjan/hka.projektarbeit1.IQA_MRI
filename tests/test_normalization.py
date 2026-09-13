@@ -177,6 +177,17 @@ class TestMask:
         assert Mask().apply(probs, source="p.nii").tolist() == [[[0.0, 0.0], [1.0, 1.0]]]
         assert Mask(threshold=0.9).apply(probs, source="p.nii").tolist() == [[[0.0, 0.0], [0.0, 1.0]]]
 
+    def test_label_on_a_float_0_1_map_selects_nothing(self):
+        binary = np.array([[[0, 1], [1, 0]], [[1, 1], [0, 0]]], dtype=np.float32)
+        assert Mask(label=2).apply(binary, source="b.dcm").tolist() == [[[0.0, 0.0], [0.0, 0.0]]] * 2
+        assert Mask(label=2).empty_slices(binary).tolist() == [True, True]
+
+    def test_float_0_255_matches_uint8_0_255(self):
+        values = [[[0, 255], [255, 0]]]
+        as_float = Mask().apply(np.array(values, dtype=np.float32), source="m.dcm")
+        as_uint8 = Mask().apply(np.array(values, dtype=np.uint8), source="m.png")
+        assert torch.equal(as_float, as_uint8)
+
     def test_float_map_outside_unit_interval_names_the_source(self):
         with pytest.raises(ValueError, match=r"logits\.nii"):
             Mask().apply(np.array([[[-3.0, 4.0]]], dtype=np.float32), source="logits.nii")

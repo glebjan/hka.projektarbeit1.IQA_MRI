@@ -48,9 +48,28 @@ def test_as_mask_int_default_is_any_nonzero():
     np.testing.assert_array_equal(as_mask(x), [False, True, True, True])
 
 
-def test_as_mask_bool_passes_through():
-    x = np.array([True, False])
-    assert as_mask(x) is x
+def test_as_mask_integer_valued_float_is_a_label_map():
+    x = np.array([0.0, 1.0, 2.0], dtype=np.float32)
+    np.testing.assert_array_equal(as_mask(x), [False, True, True])
+
+
+def test_as_mask_integer_valued_float_label_selects_one_class():
+    x = np.array([0.0, 1.0, 2.0, 2.0, 1.0], dtype=np.float32)
+    np.testing.assert_array_equal(as_mask(x, label=2), [False, False, True, True, False])
+
+
+def test_as_mask_float_0_255_matches_uint8_0_255():
+    values = [0, 255, 255, 0]
+    np.testing.assert_array_equal(
+        as_mask(np.array(values, dtype=np.float32)),
+        as_mask(np.array(values, dtype=np.uint8)),
+    )
+
+
+def test_as_mask_label_on_a_probability_map_raises():
+    x = np.array([0.0, 0.3, 0.7, 1.0], dtype=np.float32)
+    with pytest.raises(ValueError, match="label"):
+        as_mask(x, label=1)
 
 
 from iqaevaluator.segmentation_metrics.volume import v_pred, v_gt, tp, vs, vs_signed

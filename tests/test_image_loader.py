@@ -454,7 +454,9 @@ class TestMaskLoading:
 
     def test_float_map_outside_unit_interval_names_the_file(self, tmp_path):
         p = tmp_path / "logits.nii"
-        nib.save(nib.Nifti1Image(np.full((4, 4, 1), 3.0, dtype=np.float32), np.eye(4)), str(p))
+        logits = np.full((4, 4, 1), 4.0, dtype=np.float32)
+        logits[:2] = -3.0                               # a negative logit: not a label map
+        nib.save(nib.Nifti1Image(logits, np.eye(4)), str(p))
         with pytest.raises(ValueError, match="logits.nii"):
             ImageLoader(p, Mask()).tensor
 
