@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from iqaevaluator.normalization import (
-    NORMALIZER_NAMES, FixedRange, IntensityRange, MinMax, Normalizer,
+    NORMALIZER_NAMES, FixedRange, IntensityRange, Mask, MinMax, Normalizer,
     Percentile, Raw, normalizer_from_name, scale, sparse_slices,
 )
 
@@ -151,8 +151,49 @@ class TestRaw:
         assert Raw().name == "raw"
 
 
+class TestMask:
+    def test_names(self):
+        assert Mask().name == "mask"
+        assert Mask(label=2).name == "mask_label_2"
+
+    def test_range_of_is_none(self):
+        assert Mask().range_of(np.zeros((1, 2, 2), np.uint8)) is None
+
+    def test_0_255_and_0_1_give_identical_tensors(self):
+        png = np.array([[[0, 255], [255, 0]]], dtype=np.uint8)
+        nii = np.array([[[0, 1], [1, 0]]], dtype=np.uint8)
+        a, b = Mask().apply(png, source="a.png"), Mask().apply(nii, source="b.nii")
+        assert torch.equal(a, b)
+        assert a.dtype == torch.float32 and a.shape == (1, 2, 2)
+        assert set(a.unique().tolist()) == {0.0, 1.0}
+
+    def test_label_selects_one_class(self):
+        labels = np.array([[[0, 1], [2, 2]]], dtype=np.int16)
+        assert Mask(label=2).apply(labels, source="l.nii").tolist() == [[[0.0, 0.0], [1.0, 1.0]]]
+        assert Mask().apply(labels, source="l.nii").tolist() == [[[0.0, 1.0], [1.0, 1.0]]]
+
+    def test_float_map_thresholds_at_half(self):
+        probs = np.array([[[0.0, 0.49], [0.5, 1.0]]], dtype=np.float32)
+        assert Mask().apply(probs, source="p.nii").tolist() == [[[0.0, 0.0], [1.0, 1.0]]]
+        assert Mask(threshold=0.9).apply(probs, source="p.nii").tolist() == [[[0.0, 0.0], [0.0, 1.0]]]
+
+    def test_float_map_outside_unit_interval_names_the_source(self):
+        with pytest.raises(ValueError, match=r"logits\.nii"):
+            Mask().apply(np.array([[[-3.0, 4.0]]], dtype=np.float32), source="logits.nii")
+
+    def test_empty_slices_is_an_exact_count(self):
+        vol = np.zeros((3, 8, 8), dtype=np.uint8)
+        vol[1, 4, 4] = 1                                # one voxel is enough
+        assert Mask().empty_slices(vol).tolist() == [True, False, True]
+        assert Mask(label=2).empty_slices(vol).tolist() == [True, True, True]
+
+    def test_registered_under_its_cli_name(self):
+        assert NORMALIZER_NAMES["mask"] is Mask
+        assert normalizer_from_name("mask") == Mask()
+
+
 class TestProtocol:
-    @pytest.mark.parametrize("strategy", [MinMax(), Percentile(), FixedRange(None, "raw"), Raw()])
+    @pytest.mark.parametrize("strategy", [MinMax(), Percentile(), FixedRange(None, "raw"), Raw(), Mask(), Mask(label=2)])
     def test_every_strategy_satisfies_normalizer(self, strategy):
         assert isinstance(strategy, Normalizer)
 
@@ -164,7 +205,7 @@ class TestFromName:
         assert isinstance(normalizer_from_name("raw"), Raw)
 
     def test_names_match_the_registry(self):
-        assert set(NORMALIZER_NAMES) == {"minmax", "percentile", "raw"}
+        assert set(NORMALIZER_NAMES) == {"minmax", "percentile", "raw", "mask"}
 
     def test_unknown_name_lists_the_choices(self):
         with pytest.raises(ValueError, match="minmax"):

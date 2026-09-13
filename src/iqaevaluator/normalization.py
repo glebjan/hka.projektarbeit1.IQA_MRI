@@ -14,8 +14,10 @@ Strategies:
     Percentile(lower, upper)      robust extremes; opt-in, changes every score
     FixedRange(range, name)       a range decided elsewhere — how the input of a
                                   full-reference pair is put on the target's scale
-    Raw()                         no scaling; for masks and label maps, whose
-                                  integer dtype must survive
+    Mask(label=None, threshold=0.5)  binarize at load time — the way to load masks
+    Raw()                         no scaling, dtype preserved — the escape hatch
+                                  for instance maps (PQ) and anything that must
+                                  keep its dtype
 
 Conventions followed: fastMRI scales prediction and reference on the
 reference's range; MONAI/nnU-Net keep label maps as integers; TorchIO/MONAI
@@ -27,6 +29,8 @@ from typing import Optional, Protocol, runtime_checkable
 
 import numpy as np
 import torch
+
+from iqaevaluator.segmentation_metrics.volume import as_mask
 
 
 @dataclass(frozen=True)
@@ -230,8 +234,9 @@ class Raw(_RangeBased):
 
     The decoded dtype survives, so an integer label map reaches the
     segmentation metrics as integers and `as_mask(label=...)` can select one
-    label. Note that a PNG mask stores 0/255, not 0/1 — load those with
-    `MinMax()`, which maps them to exactly {0.0, 1.0}.
+    label. Segmentation masks belong to `Mask()`; `Raw()` is for panoptic-
+    quality instance maps and for callers that need the stored values
+    untouched.
     """
     name: str = "raw"
 
@@ -239,10 +244,49 @@ class Raw(_RangeBased):
         return None
 
 
+@dataclass(frozen=True)
+class Mask:
+    """Binarize at load time: the one foreground policy for segmentation runs.
+
+    Integer and bool arrays: every non-zero value is foreground when `label`
+    is None (a 0/255 PNG and a 0/1 NIfTI come out identical); `label=k`
+    keeps only `== k`, so a multi-class map is scored one label per run.
+    Float arrays are probability maps and are cut at `threshold`; values
+    outside [0, 1] raise. The tensor is float32 with values in exactly
+    {0.0, 1.0}, and a slice is empty iff it holds no foreground voxel —
+    an exact count, not the intensity heuristic. Nothing is scaled, so the
+    report's `scale_lo/hi` stay empty and `range_of` is None.
+    """
+    label: Optional[int] = None
+    threshold: float = 0.5
+
+    @property
+    def name(self) -> str:
+        return "mask" if self.label is None else f"mask_label_{self.label}"
+
+    def range_of(self, raw: np.ndarray) -> Optional[IntensityRange]:
+        return None
+
+    def _binary(self, raw: np.ndarray) -> np.ndarray:
+        return as_mask(raw, self.label, self.threshold)
+
+    def apply(self, raw: np.ndarray, *, source: str) -> torch.Tensor:
+        try:
+            mask = self._binary(raw)
+        except ValueError as exc:
+            raise ValueError(f"[{source}] {exc}") from None
+        return torch.from_numpy(np.ascontiguousarray(mask, dtype=np.float32))
+
+    def empty_slices(self, raw: np.ndarray) -> torch.Tensor:
+        foreground = self._binary(raw).reshape(raw.shape[0], -1)
+        return torch.from_numpy(~foreground.any(axis=1))
+
+
 NORMALIZER_NAMES: dict[str, type] = {
     "minmax":     MinMax,
     "percentile": Percentile,
     "raw":        Raw,
+    "mask":       Mask,
 }
 
 
