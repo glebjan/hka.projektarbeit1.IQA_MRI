@@ -30,7 +30,7 @@ def _binary_batch(n=2, h=16, w=16, seed=0):
 class TestMonaiSegmentationMetricAdapter:
     def test_call_returns_one_score_per_sample(self):
         from monai.metrics import compute_dice
-        metric = MonaiSegmentationMetric(compute_dice, include_background=True)
+        metric = MonaiSegmentationMetric(compute_dice, one_sided=0.0, include_background=True)
         pred, gt = _binary_batch(n=3)
         scores = metric(pred, gt)
         assert len(scores) == 3
@@ -38,18 +38,10 @@ class TestMonaiSegmentationMetricAdapter:
 
     def test_identical_masks_score_perfect_dice(self):
         from monai.metrics import compute_dice
-        metric = MonaiSegmentationMetric(compute_dice, include_background=True)
+        metric = MonaiSegmentationMetric(compute_dice, one_sided=0.0, include_background=True)
         pred, _ = _binary_batch(n=2)
         scores = metric(pred, pred.clone())
         assert all(s == pytest.approx(1.0) for s in scores)
-
-    def test_threshold_binarizes_before_computing(self):
-        from monai.metrics import compute_dice
-        metric = MonaiSegmentationMetric(compute_dice, include_background=True, threshold=0.5)
-        pred = torch.full((1, 1, 8, 8), 0.7)
-        gt = torch.full((1, 1, 8, 8), 0.9)
-        scores = metric(pred, gt)
-        assert scores[0] == pytest.approx(1.0)  # both binarize to all-ones
 
 
 class TestDiceMetricBuilder:
@@ -167,6 +159,28 @@ class TestMonaiPanopticQualityMetric:
         scores = metric(pred, pred.clone())
         assert all(s == pytest.approx(1.0) for s in scores)
 
+    def test_rejects_non_integer_values(self):
+        metric = MonaiPanopticQualityMetric()
+        soft = torch.full((1, 1, 8, 8), 0.5)
+        with pytest.raises(ValueError, match=r"Mask\(\).*Raw\(\)"):
+            metric(soft, soft)
+
+    def test_accepts_raw_instance_maps(self):
+        inst = torch.zeros((1, 1, 8, 8), dtype=torch.int16)
+        inst[0, 0, :3, :3] = 1
+        inst[0, 0, 5:, 5:] = 2
+        assert MonaiPanopticQualityMetric()(inst, inst.clone()) == [pytest.approx(1.0, abs=1e-5)]
+
+    def test_empty_policy_applies(self):
+        zeros = torch.zeros(1, 1, 8, 8)
+        ones = torch.ones(1, 1, 8, 8)
+        assert MonaiPanopticQualityMetric()(zeros, zeros) == [None]
+        assert MonaiPanopticQualityMetric()(ones, zeros) == [0.0]
+
+    def test_stale_threshold_raises(self):
+        with pytest.raises(TypeError, match="threshold"):
+            MonaiPanopticQualityMetric(threshold=0.5)
+
 
 class TestPanopticQualityMetricBuilder:
     def test_returns_metric_spec(self):
@@ -251,68 +265,119 @@ class TestSegmentationVolumeMode:
         assert len(metric(pred, gt)) == 4
 
 
+class TestMonaiSegmentationMetricContract:
+    def test_non_binary_input_raises_naming_mask(self):
+        from monai.metrics import compute_dice
+        metric = MonaiSegmentationMetric(compute_dice, one_sided=0.0, name="dice", include_background=True)
+        soft = torch.full((1, 1, 8, 8), 0.7)
+        with pytest.raises(ValueError, match=r"dice expects a binary mask.*Mask\(\)"):
+            metric(soft, torch.ones_like(soft))
+
+    def test_stale_threshold_kwarg_raises_type_error(self):
+        from monai.metrics import compute_dice
+        with pytest.raises(TypeError, match="threshold"):
+            MonaiSegmentationMetric(compute_dice, one_sided=0.0, threshold=0.5)
+
+    def test_missing_target_raises(self):
+        from monai.metrics import compute_dice
+        with pytest.raises(ValueError, match="target"):
+            MonaiSegmentationMetric(compute_dice, one_sided=0.0)(torch.ones(1, 1, 4, 4))
+
+    def test_one_sided_empty_uses_the_policy_value(self):
+        from monai.metrics import compute_dice, compute_hausdorff_distance
+        pred = torch.zeros(2, 1, 8, 8); pred[0, 0, 2:5, 2:5] = 1.0     # sample 0: gt empty; sample 1: both populated
+        gt = torch.zeros(2, 1, 8, 8); gt[1, 0, 2:5, 2:5] = 1.0; pred[1, 0, 2:5, 2:5] = 1.0
+        dice = MonaiSegmentationMetric(compute_dice, one_sided=0.0, include_background=True, ignore_empty=False)
+        hd = MonaiSegmentationMetric(compute_hausdorff_distance, one_sided=None, include_background=True, percentile=95)
+        assert dice(pred, gt) == [0.0, pytest.approx(1.0)]
+        assert hd(pred, gt) == [None, pytest.approx(0.0)]
+
+    def test_both_empty_is_none_for_every_one_sided_value(self):
+        from monai.metrics import compute_dice
+        zeros = torch.zeros(1, 1, 8, 8)
+        assert MonaiSegmentationMetric(compute_dice, one_sided=0.0, ignore_empty=False)(zeros, zeros) == [None]
+        assert MonaiSegmentationMetric(compute_dice, one_sided=None, ignore_empty=False)(zeros, zeros) == [None]
+
+    def test_nonfinite_backend_output_becomes_none_with_a_warning(self, capsys):
+        def broken(y_pred, y):
+            return torch.full((y_pred.shape[0], 1), float("inf"))
+        metric = MonaiSegmentationMetric(broken, one_sided=0.0, name="broken")
+        ones = torch.ones(1, 1, 4, 4)
+        assert metric(ones, ones) == [None]
+        assert "broken" in capsys.readouterr().out
+
+    def test_batch_mixes_policy_and_computed_samples_in_order(self):
+        from monai.metrics import compute_dice
+        pred = torch.zeros(3, 1, 8, 8); gt = torch.zeros(3, 1, 8, 8)
+        pred[0, 0, :4] = 1.0; gt[0, 0, :4] = 1.0        # identical → 1.0
+        gt[1, 0, :4] = 1.0                              # pred empty → 0.0
+        pred[2, 0, :4] = 1.0; gt[2, 0, 2:6] = 1.0       # half overlap → 0.5
+        metric = MonaiSegmentationMetric(compute_dice, one_sided=0.0, include_background=True, ignore_empty=False)
+        assert metric(pred, gt) == [pytest.approx(1.0), 0.0, pytest.approx(0.5)]
+
+
+@pytest.mark.parametrize("builder", [
+    dice_metric, hausdorff95_metric, normalized_surface_dice_metric,
+    average_surface_distance_metric, panoptic_quality_metric,
+])
+@pytest.mark.parametrize("stale", ["threshold", "label"])
+def test_builders_reject_the_removed_knobs_loudly(builder, stale):
+    with pytest.raises(TypeError, match=stale):
+        builder(**{stale: 0.5})
+
+
+def test_dice_is_built_without_monais_empty_skipping():
+    """ignore_empty=False: the policy decides, MONAI must not answer NaN for an empty gt."""
+    pred = torch.zeros(1, 1, 8, 8); pred[0, 0, :2] = 1.0
+    assert DICE.slice_mode.factory()(pred, torch.zeros_like(pred)) == [0.0]
+
+
 class TestIntegerMasks:
     def test_identical_integer_masks_score_perfect_dice(self):
         g = torch.Generator().manual_seed(0)
         mask = torch.randint(0, 2, (2, 1, 16, 16), generator=g)          # int64
-        metric = MonaiSegmentationMetric(compute_dice, include_background=True)
+        metric = MonaiSegmentationMetric(compute_dice, one_sided=0.0, include_background=True)
         assert metric(mask, mask.clone()) == pytest.approx([1.0, 1.0])
 
-    def test_threshold_zero_makes_every_label_foreground(self):
+    def test_multi_label_integer_map_is_rejected(self):
         labels = torch.zeros((1, 1, 8, 8), dtype=torch.int16)
         labels[0, 0, :4] = 1
         labels[0, 0, 4:] = 3
-        metric = MonaiSegmentationMetric(compute_dice, include_background=True, threshold=0.0)
-        assert metric(labels, torch.ones_like(labels)) == pytest.approx([1.0])
+        metric = MonaiSegmentationMetric(compute_dice, one_sided=0.0, name="dice", include_background=True)
+        with pytest.raises(ValueError, match=r"Mask\(\)"):
+            metric(labels, torch.ones_like(labels))
 
 
-class TestRawLabelMapEndToEnd:
-    """End-to-end: a real integer NIfTI label map, loaded via Raw(), through
-    MonaiSegmentationMetric. Mirrors TestRawLabelMapEndToEnd in
-    tests/test_volume.py, which covers the same namesake bug for the
-    numpy-backed volume metrics.
-    """
+class TestMaskLabelMapEndToEnd:
+    """A real integer NIfTI label map through Mask() and the adapter."""
 
-    def test_multi_label_mask_loaded_raw_scores_perfect_dice(self, tmp_path):
+    def _label_map(self, tmp_path):
         import nibabel as nib
-        from iqaevaluator.image_loader import ImageLoader
-        from iqaevaluator.normalization import Raw
-
-        # Multi-label mask spanning {0, 1, 2, 3} so a min-max scaling has the
-        # file's full [0, 3] range to compress into [0, 1]: label 1 -> 0.333
-        # (falls under a 0.5 cutoff), labels 2 -> 0.667 and 3 -> 1.0 (both
-        # clear it). Label 1's region (rows 2-3) is therefore the sharpest
-        # discriminator between Raw() and MinMax() at threshold=0.5.
         labels = np.zeros((10, 4, 1), dtype=np.int16)
-        labels[0:2, :, 0] = 0
         labels[2:4, :, 0] = 1
         labels[4:7, :, 0] = 2
         labels[7:10, :, 0] = 3
         p = tmp_path / "multi_label.nii"
         nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p))
+        return p
 
-        pred = ImageLoader(p, Raw()).tensor  # (D, 1, H, W), int16, unscaled
-        assert pred.dtype == torch.int16
-        assert pred.shape == (1, 1, 10, 4)  # the (10, 4, 1) array's Z axis
-        # (size 1) becomes D; X and Y become H and W unchanged -- verified
-        # directly, not assumed: pred[0, 0] reproduces the labels array
-        # row-for-row (row index == the numpy array's first-axis index).
+    def test_any_nonzero_label_is_foreground_under_mask(self, tmp_path):
+        from iqaevaluator.image_loader import ImageLoader
+        from iqaevaluator.normalization import Mask
+        pred = ImageLoader(self._label_map(tmp_path), Mask()).tensor  # (1, 1, 10, 4) float {0, 1}
+        gt = torch.zeros((1, 1, 10, 4)); gt[:, :, 2:10, :] = 1.0
+        assert DICE.slice_mode.factory()(pred, gt) == [pytest.approx(1.0)]
 
-        # Ground truth is written independently from the known label
-        # geometry above -- H rows 0-1 (label 0) are background, H rows 2-9
-        # (labels 1, 2, 3) are foreground -- never derived from `pred` by a
-        # transformation of it, so the assertion below can actually fail.
-        gt = torch.zeros((1, 1, 10, 4), dtype=torch.float32)
-        gt[:, :, 2:10, :] = 1.0
+    def test_one_label_under_mask_label(self, tmp_path):
+        from iqaevaluator.image_loader import ImageLoader
+        from iqaevaluator.normalization import Mask
+        pred = ImageLoader(self._label_map(tmp_path), Mask(label=2)).tensor
+        gt = torch.zeros((1, 1, 10, 4)); gt[:, :, 4:7, :] = 1.0
+        assert DICE.slice_mode.factory()(pred, gt) == [pytest.approx(1.0)]
 
-        metric = MonaiSegmentationMetric(compute_dice, include_background=True, threshold=0.5)
-        scores = metric(pred, gt)
-
-        # threshold=0.5 is the cutoff that caused the original bug. Under
-        # Raw() (the fix), label 1 arrives as the raw integer 1, clears 0.5,
-        # and pred's foreground exactly matches gt: dice == 1.0 everywhere.
-        # Confirmed by direct substitution (see the fix report): loading the
-        # same file with MinMax() instead of Raw() scales label 1 to 0.333,
-        # which fails the 0.5 threshold and drops rows 2-3 into the
-        # background, so those slices score dice < 1.0 under that swap.
-        assert scores == pytest.approx([1.0] * pred.shape[0])
+    def test_raw_label_map_is_rejected_with_a_pointer_to_mask(self, tmp_path):
+        from iqaevaluator.image_loader import ImageLoader
+        from iqaevaluator.normalization import Raw
+        pred = ImageLoader(self._label_map(tmp_path), Raw()).tensor      # int16 {0,1,2,3}
+        with pytest.raises(ValueError, match=r"Mask\(\)"):
+            DICE.slice_mode.factory()(pred, torch.ones_like(pred))

@@ -2,44 +2,42 @@
 
 These metrics evaluate segmentation masks (pred vs. ground-truth label maps),
 not image intensity — they answer "how good is this segmentation?" rather
-than "how good is this reconstructed image?". Inputs are expected to be
-binary/label mask tensors, e.g. images loaded via `ImageLoader` from mask
-files the user already produced with their own segmentation pipeline; this
-module performs no segmentation itself.
+than "how good is this reconstructed image?". This module performs no
+segmentation itself.
 
-Load mask files with `normalization.Raw()` (`ImageLoader(path, Raw())` or
-`load_pair(..., Raw())`) so they arrive unscaled in their stored dtype. A
-binary 0/1 mask then needs no `threshold`. For a multi-label map, pass
-`threshold=0.0` to score every non-zero label as foreground; these adapters do
-not select a single label — the numpy-backed metrics in `volume.py` do, via
-`label=`. PNG masks store 0/255 and should be loaded with `MinMax()` instead,
-which maps them to exactly {0.0, 1.0}.
+Input must be binary — load masks with `normalization.Mask()`
+(`ImageLoader(path, Mask())` or `load_pair(..., Mask())`). `Mask()` turns
+0/255 PNGs, 0/1 NIfTIs and integer label maps (`Mask(label=k)` for one class)
+into float32 {0, 1}; every adapter here checks that and rejects anything
+else. The one exception is panoptic quality, which also accepts an integer
+instance map loaded with `Raw()`.
 
-MONAI's defaults are calibrated for the medical-imaging domain (physical
-voxel spacing in millimeters, a background-class convention). Each builder
-function's MetricSpec.description below states which parameters must be
-adjusted to apply the metric in another domain (e.g. materials science:
-different physical units via `spacing`, different class counts via
-`class_thresholds`/kwargs).
+Empty masks follow one policy (`volume.empty_policy`): with exactly one side
+empty, Dice/NSD/PQ score 0.0 and HD95/ASSD are `None` (no finite distance
+exists); with both sides empty every score is `None`. MONAI's own answers for
+those cases (NaN, inf, or Dice 1.0) never reach a record.
 
-Usage: each builder (`dice_metric()`, `hausdorff95_metric()`, etc.) returns a
-`MetricSpec` — pass one or more of these into `MetricRegistry(*specs)` (or
-`registry.register(*specs)`) to build a per-run registry, then hand that
-registry to `IQAEvaluator(registry=registry, ...)`. The evaluator looks up
-and lazily instantiates each spec's metric from the registry when it runs.
+MONAI's defaults are calibrated for the medical-imaging domain (physical voxel
+spacing in millimetres, a background-class convention). Domain parameters are
+forwarded unchanged via `**monai_kwargs`; each builder's docstring states
+which ones matter in another domain (materials science: different physical
+units via `spacing`, different class counts via `class_thresholds`).
+
+Usage: each builder (`dice_metric()`, `hausdorff95_metric()`, ...) returns a
+`MetricSpec` — pass one or more into `MetricRegistry(*specs)` and hand that
+registry to `IQAEvaluator`/`VolumeEvaluator`:
 
     from iqaevaluator.metrics import MetricRegistry
     from iqaevaluator.segmentation_metrics.monai_metrics import DICE, HAUSDORFF95
-    from iqaevaluator.iqa_evaluator import IQAEvaluator
 
     registry = MetricRegistry(DICE, HAUSDORFF95)
-    evaluator = IQAEvaluator(registry=registry, ...)
 
 Use the pre-built constants (`DICE`, `HAUSDORFF95`, `NSD`, `ASSD`,
-`PANOPTIC_QUALITY`) for defaults, or call a builder directly (e.g.
-`dice_metric(threshold=0.5)`) to override params before registering.
+`PANOPTIC_QUALITY`) for defaults, or call a builder with MONAI keyword
+arguments (e.g. `hausdorff95_metric(percentile=None)`) before registering.
 """
 
+import math
 from typing import Callable, Optional
 
 import torch
@@ -52,17 +50,103 @@ from monai.metrics import (
 )
 
 from iqaevaluator.metric_spec import MetricSpec, ModeSupport, Spacing
+from iqaevaluator.segmentation_metrics.volume import (
+    NOT_EMPTY, empty_policy, foreground_counts, require_binary,
+)
 
 DOMAIN_MEDICAL = "medical (MONAI)"
+
+_REMOVED_KNOBS = ("threshold", "label")
+
+
+def _reject_removed_knobs(name: str, kwargs: dict) -> None:
+    """`threshold`/`label` used to be adapter parameters. A stale caller must
+    fail here rather than have the keyword forwarded to MONAI (or ignored)."""
+    for key in _REMOVED_KNOBS:
+        if key in kwargs:
+            raise TypeError(
+                f"{name} no longer takes '{key}': binarization is decided by the "
+                "loader — load masks with normalization.Mask() (Mask(label=k) "
+                "selects one class)."
+            )
+
+
+class MonaiSegmentationMetric:
+    """Adapter for MONAI's one-hot-batch functional metrics (Dice, HD95, NSD, ASSD).
+
+    All four share the call signature `compute_fn(y_pred, y, **kwargs) -> (N, C)`
+    tensor (batch x class channels); this adapter averages across the class
+    dimension (NaN-aware) to produce one score per sample, matching the
+    Metric protocol.
+
+    Both tensors must be binary (`require_binary`); the empty-mask policy is
+    applied per sample before MONAI sees anything, with `one_sided` as the
+    score for exactly-one-side-empty (0.0 for Dice/NSD, None for HD95/ASSD).
+    A NaN or inf that MONAI still returns for a populated pair is recorded as
+    None and printed as a warning — an unexpected case must not be silent.
+
+    In volume mode the adapter receives a single `(1, C, D, H, W)` sample and
+    returns a single score; the distance metrics additionally receive
+    `spacing` so their result is in millimetres rather than voxels.
+    """
+
+    def __init__(
+        self,
+        compute_fn: Callable[..., torch.Tensor],
+        *,
+        one_sided: Optional[float],
+        name: Optional[str] = None,
+        **monai_kwargs,
+    ):
+        self._name = name or compute_fn.__name__
+        _reject_removed_knobs(self._name, monai_kwargs)
+        self._compute_fn = compute_fn
+        self._one_sided  = one_sided
+        self._kwargs     = monai_kwargs
+
+    def __call__(self, input: torch.Tensor, target: Optional[torch.Tensor] = None) -> list[Optional[float]]:
+        if target is None:
+            raise ValueError(f"'{self._name}' compares two masks and requires a target mask")
+        require_binary(input, metric=self._name)
+        require_binary(target, metric=self._name)
+        # MONAI 1.6.0 happens to accept integer input; that is an implementation
+        # detail of a third-party library, so the adapter guarantees floats itself.
+        y_pred, y = input.float(), target.float()
+
+        n_pred, n_gt = foreground_counts(y_pred, y)
+        results: list[Optional[float]] = [None] * y_pred.shape[0]
+        active: list[int] = []
+        for i in range(y_pred.shape[0]):
+            verdict = empty_policy(int(n_pred[i]), int(n_gt[i]), one_sided=self._one_sided)
+            if verdict is NOT_EMPTY:
+                active.append(i)
+            else:
+                results[i] = verdict
+
+        if active:
+            scores = self._compute_fn(y_pred=y_pred[active], y=y[active], **self._kwargs)  # (n, C)
+            per_sample = torch.nanmean(scores.float(), dim=1)
+            for i, score in zip(active, per_sample):
+                value = float(score.item())
+                if not math.isfinite(value):
+                    print(
+                        f"[WARNING] {self._name}: MONAI returned {value} for sample {i} "
+                        "although both masks have foreground; recorded as None."
+                    )
+                    results[i] = None
+                else:
+                    results[i] = value
+        return results
 
 
 def _volume_factory(
     compute_fn: Callable[..., torch.Tensor],
     *,
-    threshold: Optional[float],
+    one_sided: Optional[float],
+    name: str,
     uses_spacing: bool,
     **monai_kwargs,
-) -> Callable[[Optional[Spacing]], "MonaiSegmentationMetric"]:
+) -> Callable[[Optional[Spacing]], MonaiSegmentationMetric]:
     """Build the volume-mode factory for one MONAI functional metric.
 
     `uses_spacing` marks the distance metrics (HD95, NSD, ASSD), which convert
@@ -71,7 +155,7 @@ def _volume_factory(
     whatever the current file happens to say would be worse than ignoring the
     file.
     """
-    def build(spacing: Optional[Spacing]) -> "MonaiSegmentationMetric":
+    def build(spacing: Optional[Spacing]) -> MonaiSegmentationMetric:
         kwargs = dict(monai_kwargs)
         if uses_spacing:
             if spacing is not None:
@@ -83,85 +167,59 @@ def _volume_factory(
                     "comparable between images on the same grid, but not "
                     "between images recorded at different resolutions."
                 )
-        return MonaiSegmentationMetric(compute_fn, threshold=threshold, **kwargs)
+        return MonaiSegmentationMetric(compute_fn, one_sided=one_sided, name=name, **kwargs)
 
     return build
 
 
-class MonaiSegmentationMetric:
-    """Adapter for MONAI's one-hot-batch functional metrics (Dice, HD95, NSD, ASSD).
-
-    All four share the call signature `compute_fn(y_pred, y, **kwargs) -> (N, C)`
-    tensor (batch x class channels); this adapter averages across the class
-    dimension to produce one score per sample, matching the Metric protocol.
-
-    `threshold`: MONAI's metrics expect hard binary masks (0/1), but pred/gt
-    tensors loaded from disk (e.g. via `ImageLoader`) may be soft/probability
-    values in [0, 1] instead of clean binary masks. If set, both pred and gt
-    are binarized as `value > threshold` before scoring — anything above the
-    cutoff becomes 1.0, everything else 0.0. Leave `None` (default) if your
-    masks are already strictly binary; setting a threshold on data that isn't
-    a probability map will silently corrupt scores.
-
-    In volume mode the adapter receives a single `(1, C, D, H, W)` sample and
-    returns a single score. MONAI's functional metrics accept 4D and 5D input
-    alike, so the adapter itself is unchanged; the distance metrics additionally
-    receive `spacing` so their result is in millimetres rather than voxels.
-    """
-
-    def __init__(self, compute_fn: Callable[..., torch.Tensor], *, threshold: Optional[float] = None, **monai_kwargs):
-        self._compute_fn = compute_fn
-        self._threshold  = threshold
-        self._kwargs     = monai_kwargs
-
-    def _binarize(self, t: torch.Tensor) -> torch.Tensor:
-        # Masks loaded with normalization.Raw() arrive in their stored integer
-        # dtype. The MONAI functionals wired through this adapter (dice,
-        # HD95, NSD, ASSD) happen to tolerate integer input as of MONAI
-        # 1.6.0, but that tolerance is an internal implementation detail of
-        # a third-party library, not a contract this adapter should lean on
-        # across versions. This cast makes the adapter guarantee a float
-        # tensor at its own boundary regardless of what the installed MONAI
-        # version happens to accept internally.
-        t = t.float()
-        return (t > self._threshold).float() if self._threshold is not None else t
-
-    def __call__(self, input: torch.Tensor, target: Optional[torch.Tensor] = None) -> list[Optional[float]]:
-        y_pred = self._binarize(input)
-        y      = self._binarize(target)
-        scores = self._compute_fn(y_pred=y_pred, y=y, **self._kwargs)  # (N, C)
-        per_sample = scores.mean(dim=1)
-        return [None if torch.isnan(s) else float(s.item()) for s in per_sample]
+def _monai_spec(
+    name: str,
+    compute_fn: Callable[..., torch.Tensor],
+    *,
+    direction: str,
+    one_sided: Optional[float],
+    uses_spacing: bool,
+    description: str,
+    defaults: dict,
+    **monai_kwargs,
+) -> MetricSpec:
+    """One MetricSpec for one MONAI functional; `defaults` are the domain
+    defaults a caller's `monai_kwargs` may override."""
+    _reject_removed_knobs(f"{name}_metric()", monai_kwargs)
+    kwargs = {**defaults, **monai_kwargs}
+    metric = MonaiSegmentationMetric(compute_fn, one_sided=one_sided, name=name, **kwargs)
+    return MetricSpec(
+        name=name,
+        direction=direction,
+        reference=True,
+        channels="gray",
+        slice_mode=ModeSupport(lambda: metric),
+        volume_mode=ModeSupport(_volume_factory(
+            compute_fn, one_sided=one_sided, name=name, uses_spacing=uses_spacing, **kwargs)),
+        builtin=False,
+        description=description,
+        domain=DOMAIN_MEDICAL,
+    )
 
 
-def dice_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricSpec:
+def dice_metric(**monai_kwargs) -> MetricSpec:
     """Dice similarity coefficient: 2*|pred ∩ gt| / (|pred| + |gt|), 1.0 = perfect overlap.
 
-    Domain: medical (MONAI). Defaults assume a single foreground mask channel
-    (include_background=True, since there is nothing else to include). For
-    multi-class segmentation, pass a multi-channel one-hot input and set
-    include_background=False to exclude a true background channel.
+    Input must be binary — load masks with `Mask()`. Domain: medical (MONAI).
+    Defaults assume a single foreground mask channel (include_background=True,
+    since there is nothing else to include) and `ignore_empty=False`, so an
+    empty reference with a non-empty prediction scores 0.0 (the empty-mask
+    policy decides these cases anyway).
 
     Args:
-        threshold: binarize cutoff for soft/probability pred+gt inputs
-            (`value > threshold` -> 0/1). None (default) = inputs already
-            binary, skip binarization.
         include_background (kwarg, default True): if False, drops channel 0
             (assumed background class) before scoring — only meaningful for
             multi-channel one-hot input.
         **monai_kwargs: forwarded verbatim to `monai.metrics.compute_dice`.
     """
-    monai_kwargs.setdefault("include_background", True)
-    metric = MonaiSegmentationMetric(compute_dice, threshold=threshold, **monai_kwargs)
-    return MetricSpec(
-        name="dice",
-        direction="higher_is_better",
-        reference=True,
-        channels="gray",
-        slice_mode=ModeSupport(lambda: metric),
-        volume_mode=ModeSupport(_volume_factory(
-            compute_dice, threshold=threshold, uses_spacing=False, **monai_kwargs)),
-        builtin=False,
+    return _monai_spec(
+        "dice", compute_dice, direction="higher_is_better", one_sided=0.0, uses_spacing=False,
+        defaults={"include_background": True, "ignore_empty": False},
         description=(
             "Dice similarity coefficient: overlap between predicted and "
             "ground-truth segmentation masks (1.0 = perfect overlap, 0.0 = no "
@@ -170,48 +228,36 @@ def dice_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricS
             "one-hot mask and set include_background=False to exclude a real "
             "background class."
         ),
-        domain=DOMAIN_MEDICAL,
+        **monai_kwargs,
     )
 
 
 DICE = dice_metric()
 
 
-def hausdorff95_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricSpec:
+def hausdorff95_metric(**monai_kwargs) -> MetricSpec:
     """95th-percentile Hausdorff Distance: worst-case boundary error, robust to outlier voxels.
 
-    Domain: medical (MONAI) — the returned distance is in voxel units unless
-    `spacing` is supplied (physical units per voxel, e.g. mm for medical scans
-    or µm for materials micrographs). Pass `spacing=<value or per-axis list>`
-    to get physically meaningful distances in another domain.
+    Input must be binary — load masks with `Mask()`. Domain: medical (MONAI) —
+    the returned distance is in voxel units unless `spacing` is supplied
+    (physical units per voxel, e.g. mm for medical scans or µm for materials
+    micrographs). Definition: max over both directions of the 95th percentile
+    of surface-voxel distances (Taha & Hanbury 2015); with exactly one empty
+    mask the score is None.
 
     Args:
-        threshold: binarize cutoff for soft/probability pred+gt inputs
-            (`value > threshold` -> 0/1). None (default) = inputs already
-            binary, skip binarization.
         include_background (kwarg, default True): if False, drops channel 0
             (assumed background class) before scoring.
         percentile (kwarg, default 95): which percentile of boundary-point
-            distances to report; 95 makes the metric robust to a few outlier
-            voxels (100 would be the plain max Hausdorff distance).
+            distances to report; None gives the plain (max) Hausdorff distance.
+        directed (kwarg, default False): True measures pred→gt only.
         spacing (kwarg, default None): physical size of one voxel (scalar or
-            per-axis list); converts the voxel-unit distance to real units
-            (mm for medical, µm for materials, etc). Omit to get raw voxel
-            counts.
+            per-axis list); converts the voxel-unit distance to real units.
         **monai_kwargs: forwarded verbatim to `monai.metrics.compute_hausdorff_distance`.
     """
-    monai_kwargs.setdefault("include_background", True)
-    monai_kwargs.setdefault("percentile", 95)
-    metric = MonaiSegmentationMetric(compute_hausdorff_distance, threshold=threshold, **monai_kwargs)
-    return MetricSpec(
-        name="hausdorff95",
-        direction="lower_is_better",
-        reference=True,
-        channels="gray",
-        slice_mode=ModeSupport(lambda: metric),
-        volume_mode=ModeSupport(_volume_factory(
-            compute_hausdorff_distance, threshold=threshold, uses_spacing=True, **monai_kwargs)),
-        builtin=False,
+    return _monai_spec(
+        "hausdorff95", compute_hausdorff_distance, direction="lower_is_better", one_sided=None,
+        uses_spacing=True, defaults={"include_background": True, "percentile": 95},
         description=(
             "95th-percentile Hausdorff Distance: how far the predicted "
             "segmentation boundary is from the ground-truth boundary in the "
@@ -221,22 +267,19 @@ def hausdorff95_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> 
             "the equivalent voxel size for another domain (e.g. µm for "
             "materials micrographs)."
         ),
-        domain=DOMAIN_MEDICAL,
+        **monai_kwargs,
     )
 
 
 HAUSDORFF95 = hausdorff95_metric()
 
 
-def normalized_surface_dice_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricSpec:
+def normalized_surface_dice_metric(**monai_kwargs) -> MetricSpec:
     """Normalized Surface Dice (NSD): fraction of the predicted/gt boundary within a tolerance distance.
 
-    Domain: medical (MONAI). `class_thresholds` is the tolerance distance per
-    class (defaults to `[1.0]`) — MONAI requires it and treats it in the same
-    units as `spacing`. For another domain, set both `class_thresholds`
-    (acceptable boundary error) and `spacing` (physical voxel size) to that
-    domain's units and tolerance, and extend `class_thresholds` to one entry
-    per class if using multi-class masks.
+    Input must be binary — load masks with `Mask()`. Domain: medical (MONAI).
+    `class_thresholds` is the tolerance distance per class (defaults to
+    `[1.0]`) — MONAI requires it and treats it in the same units as `spacing`.
 
     The scoring mode therefore changes what this metric measures, not just its
     scale. Slice mode passes no spacing, so the default tolerance means one
@@ -247,32 +290,15 @@ def normalized_surface_dice_metric(*, threshold: Optional[float] = None, **monai
     compare an `nsd` column from a slice run against one from a volume run.
 
     Args:
-        threshold: binarize cutoff for soft/probability pred+gt inputs
-            (`value > threshold` -> 0/1). None (default) = inputs already
-            binary, skip binarization.
-        include_background (kwarg, default True): if False, drops channel 0
-            (assumed background class) before scoring.
-        class_thresholds (kwarg, default [1.0]): per-class tolerance distance
-            — boundary points within this distance of each other count as
-            matching. One entry per class channel; interpreted in the same
-            units as `spacing`.
-        spacing (kwarg, default None): physical size of one voxel (scalar or
-            per-axis list); sets the unit that `class_thresholds` is measured
-            in. Omit to work in raw voxel counts.
+        include_background (kwarg, default True): if False, drops channel 0.
+        class_thresholds (kwarg, default [1.0]): per-class tolerance distance,
+            one entry per class channel, in the units of `spacing`.
+        spacing (kwarg, default None): physical size of one voxel.
         **monai_kwargs: forwarded verbatim to `monai.metrics.compute_surface_dice`.
     """
-    monai_kwargs.setdefault("include_background", True)
-    monai_kwargs.setdefault("class_thresholds", [1.0])
-    metric = MonaiSegmentationMetric(compute_surface_dice, threshold=threshold, **monai_kwargs)
-    return MetricSpec(
-        name="nsd",
-        direction="higher_is_better",
-        reference=True,
-        channels="gray",
-        slice_mode=ModeSupport(lambda: metric),
-        volume_mode=ModeSupport(_volume_factory(
-            compute_surface_dice, threshold=threshold, uses_spacing=True, **monai_kwargs)),
-        builtin=False,
+    return _monai_spec(
+        "nsd", compute_surface_dice, direction="higher_is_better", one_sided=0.0,
+        uses_spacing=True, defaults={"include_background": True, "class_thresholds": [1.0]},
         description=(
             "Normalized Surface Dice: fraction of the predicted and "
             "ground-truth boundaries that lie within a tolerance distance of "
@@ -284,45 +310,30 @@ def normalized_surface_dice_metric(*, threshold: Optional[float] = None, **monai
             "boundary error, and add one threshold per class for multi-class "
             "masks."
         ),
-        domain=DOMAIN_MEDICAL,
+        **monai_kwargs,
     )
 
 
 NSD = normalized_surface_dice_metric()
 
 
-def average_surface_distance_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricSpec:
+def average_surface_distance_metric(**monai_kwargs) -> MetricSpec:
     """Average Symmetric Surface Distance (ASSD): mean boundary distance in both directions.
 
-    Domain: medical (MONAI). Like HD95, the result is in voxel units unless
-    `spacing` is supplied. For another domain, set `spacing` to that domain's
-    physical voxel size to get a physically meaningful distance.
+    Input must be binary — load masks with `Mask()`. Domain: medical (MONAI).
+    Like HD95, the result is in voxel units unless `spacing` is supplied, and
+    with exactly one empty mask the score is None.
 
     Args:
-        threshold: binarize cutoff for soft/probability pred+gt inputs
-            (`value > threshold` -> 0/1). None (default) = inputs already
-            binary, skip binarization.
-        include_background (kwarg, default True): if False, drops channel 0
-            (assumed background class) before scoring.
-        symmetric (kwarg, default True): average pred→gt and gt→pred boundary
-            distances (True) vs. one direction only (False).
-        spacing (kwarg, default None): physical size of one voxel (scalar or
-            per-axis list); converts the voxel-unit distance to real units.
-            Omit to get raw voxel counts.
+        include_background (kwarg, default True): if False, drops channel 0.
+        symmetric (kwarg, default True): mean over the pred→gt and gt→pred
+            surface distances pooled (True) vs. pred→gt only (False).
+        spacing (kwarg, default None): physical size of one voxel.
         **monai_kwargs: forwarded verbatim to `monai.metrics.compute_average_surface_distance`.
     """
-    monai_kwargs.setdefault("include_background", True)
-    monai_kwargs.setdefault("symmetric", True)
-    metric = MonaiSegmentationMetric(compute_average_surface_distance, threshold=threshold, **monai_kwargs)
-    return MetricSpec(
-        name="assd",
-        direction="lower_is_better",
-        reference=True,
-        channels="gray",
-        slice_mode=ModeSupport(lambda: metric),
-        volume_mode=ModeSupport(_volume_factory(
-            compute_average_surface_distance, threshold=threshold, uses_spacing=True, **monai_kwargs)),
-        builtin=False,
+    return _monai_spec(
+        "assd", compute_average_surface_distance, direction="lower_is_better", one_sided=None,
+        uses_spacing=True, defaults={"include_background": True, "symmetric": True},
         description=(
             "Average Symmetric Surface Distance: mean distance between the "
             "predicted and ground-truth boundaries, averaged in both "
@@ -332,7 +343,7 @@ def average_surface_distance_metric(*, threshold: Optional[float] = None, **mona
             "the equivalent voxel size for another domain (e.g. µm for "
             "materials micrographs)."
         ),
-        domain=DOMAIN_MEDICAL,
+        **monai_kwargs,
     )
 
 
@@ -340,69 +351,82 @@ ASSD = average_surface_distance_metric()
 
 
 class MonaiPanopticQualityMetric:
-    """Adapter for MONAI's compute_panoptic_quality, which takes one (H, W)
-    integer instance-label map per image (no batch/channel dim, unlike the
-    other four metrics) — this loops over the batch itself.
+    """Adapter for MONAI's compute_panoptic_quality, which takes one integer
+    instance-label map per image (no batch/channel dim, unlike the other four
+    metrics) — this loops over the batch itself.
 
-    Binary 0/1 masks are treated as a single-instance PQ (foreground = one
-    instance). For true multi-instance panoptic quality, supply pred/gt with
-    distinct integer instance IDs per object instead of a plain 0/1 mask.
-
-    `threshold`: see `MonaiSegmentationMetric` above — same binarize-before-
-    scoring behavior (`value > threshold` on both pred and gt), same caveat
-    about only using it on genuinely soft/probability inputs.
+    Accepts integer-valued tensors only: `{0, 1}` from `Mask()` (a binary mask
+    is scored as single-instance PQ, foreground = one instance) or an instance
+    map with one integer id per object loaded with `Raw()`. The empty-mask
+    policy is Dice's: one side empty → 0.0, both empty → None.
     """
 
-    def __init__(self, *, threshold: Optional[float] = None, **monai_kwargs):
-        self._threshold = threshold
-        self._kwargs    = monai_kwargs
+    def __init__(self, **monai_kwargs):
+        _reject_removed_knobs("panoptic_quality", monai_kwargs)
+        self._kwargs = monai_kwargs
 
-    def _binarize(self, t: torch.Tensor) -> torch.Tensor:
-        return (t > self._threshold).float() if self._threshold is not None else t
+    @staticmethod
+    def _require_integer_valued(t: torch.Tensor) -> None:
+        f = t.float()
+        if not bool((f == f.round()).all()):
+            raise ValueError(
+                "panoptic_quality expects integer-valued instance maps: load binary "
+                "masks with normalization.Mask() and instance maps with normalization.Raw()"
+            )
 
     def __call__(self, input: torch.Tensor, target: Optional[torch.Tensor] = None) -> list[Optional[float]]:
-        y_pred = self._binarize(input)
-        y      = self._binarize(target)
+        if target is None:
+            raise ValueError("'panoptic_quality' compares two masks and requires a target mask")
+        self._require_integer_valued(input)
+        self._require_integer_valued(target)
         scores: list[Optional[float]] = []
-        for i in range(y_pred.shape[0]):
-            pred_map = y_pred[i, 0].long()
-            gt_map   = y[i, 0].long()
-            score = compute_panoptic_quality(pred_map, gt_map, **self._kwargs)
-            scores.append(None if torch.isnan(score) else float(score.item()))
+        for i in range(input.shape[0]):
+            pred_map = input[i, 0].long()
+            gt_map   = target[i, 0].long()
+            verdict = empty_policy(int((pred_map != 0).sum()), int((gt_map != 0).sum()), one_sided=0.0)
+            if verdict is not NOT_EMPTY:
+                scores.append(verdict)
+                continue
+            value = float(compute_panoptic_quality(pred_map, gt_map, **self._kwargs).item())
+            if not math.isfinite(value):
+                print(
+                    f"[WARNING] panoptic_quality: MONAI returned {value} for sample {i} "
+                    "although both maps have foreground; recorded as None."
+                )
+                scores.append(None)
+            else:
+                scores.append(value)
         return scores
 
 
-def panoptic_quality_metric(*, threshold: Optional[float] = None, **monai_kwargs) -> MetricSpec:
-    """Panoptic Quality (PQ): combines detection accuracy (matching instances
-    by IoU) and segmentation accuracy (mean IoU of matched instances) into one score.
+def panoptic_quality_metric(**monai_kwargs) -> MetricSpec:
+    """Panoptic Quality (PQ): detection accuracy (instances matched by IoU) times
+    segmentation accuracy (mean IoU of matched instances), Kirillov et al. 2019.
 
-    Domain: medical (MONAI) — designed for instance segmentation (e.g.
-    individual cells, lesions). For a plain binary mask, PQ degenerates to a
-    single-instance IoU-based score. For another domain with multiple
-    distinct objects (e.g. grains/particles in a materials micrograph),
-    supply pred/gt with a unique integer label per instance instead of a
-    binary mask, and tune `match_iou_threshold` (default 0.5) for that
-    domain's acceptable localization tolerance.
+    Binary masks from `Mask()` degenerate to a single-instance IoU-based score;
+    for true multi-instance PQ load integer instance maps with `Raw()`. Domain:
+    medical (MONAI), designed for instance segmentation (cells, lesions). For
+    another domain with multiple distinct objects (grains in a micrograph),
+    supply one integer id per instance and tune `match_iou_threshold`. Note
+    that MONAI adds `smooth_numerator=1e-6` to the denominator.
 
     Args:
-        threshold: binarize cutoff for soft/probability pred+gt inputs
-            (`value > threshold` -> 0/1). None (default) = inputs already
-            binary/label, skip binarization.
-        match_iou_threshold (kwarg, default 0.5): minimum IoU for a
-            predicted instance to count as matched to a ground-truth
-            instance; unmatched instances count against the score.
+        match_iou_threshold (kwarg, default 0.5): minimum IoU for a predicted
+            instance to count as matched; unmatched instances count against
+            the score.
+        metric_name (kwarg, default "pq"): "pq", "sq" or "rq".
         **monai_kwargs: forwarded verbatim to `monai.metrics.compute_panoptic_quality`.
     """
-    monai_kwargs.setdefault("match_iou_threshold", 0.5)
-    metric = MonaiPanopticQualityMetric(threshold=threshold, **monai_kwargs)
+    _reject_removed_knobs("panoptic_quality_metric()", monai_kwargs)
+    kwargs = {"match_iou_threshold": 0.5, **monai_kwargs}
+    metric = MonaiPanopticQualityMetric(**kwargs)
     return MetricSpec(
         name="panoptic_quality",
         direction="higher_is_better",
         reference=True,
         channels="gray",
         slice_mode=ModeSupport(lambda: metric),
-        volume_mode=ModeSupport(
-            lambda spacing: MonaiPanopticQualityMetric(threshold=threshold, **monai_kwargs)),
+        volume_mode=ModeSupport(lambda spacing: MonaiPanopticQualityMetric(**kwargs)),
         builtin=False,
         description=(
             "Panoptic Quality: combines instance-detection accuracy (are the "
