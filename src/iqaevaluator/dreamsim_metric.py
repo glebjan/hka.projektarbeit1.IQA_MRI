@@ -26,8 +26,8 @@ from typing import Callable, Optional
 import torch
 import torch.nn.functional as F
 
-from constants import DREAMSIM_CACHE
-from metrics import DEVICE, MetricSpec, ModeSupport, ModeUnsupported, REASON_DEEP_2D
+from iqaevaluator.constants import DREAMSIM_CACHE
+from iqaevaluator.metrics import DEVICE, MetricSpec, ModeSupport, ModeUnsupported, REASON_DEEP_2D
 
 # DreamSim's ViTs have fixed positional embeddings — 224x224 is not a
 # suggestion, it is the only accepted input size.

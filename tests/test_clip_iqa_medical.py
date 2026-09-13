@@ -2,7 +2,7 @@
 import pytest
 import torch
 
-from clip_iqa_medical import (
+from iqaevaluator.clip_iqa_medical import (
     ClipIQABrain,
     ClipIQALung,
     _BRAIN_PROMPTS,

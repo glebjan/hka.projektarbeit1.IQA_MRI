@@ -6,7 +6,7 @@ import pytest
 import torch
 from PIL import Image
 
-from image_loader import (
+from iqaevaluator.image_loader import (
     ImageLoader,
     LoadedImage,
     _load_dicom,

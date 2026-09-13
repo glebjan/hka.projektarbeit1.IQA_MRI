@@ -3,12 +3,12 @@ import numpy as np
 import torch
 import pytest
 
-from image_loader import ImageLoader, LoadedImage
-from iqa_evaluator import IQAEvaluator, BATCH_SIZE
-from metrics import (MetricRegistry, MetricSpec, ModeSupport, PSNR, SSIM,
+from iqaevaluator.image_loader import ImageLoader, LoadedImage
+from iqaevaluator.iqa_evaluator import IQAEvaluator, BATCH_SIZE
+from iqaevaluator.metrics import (MetricRegistry, MetricSpec, ModeSupport, PSNR, SSIM,
                      FSIM, GMSD, VSI, MUSIQ, MANIQA, PAQ2PIQ, PIQE, ILNIQE)
-from normalization import MinMax
-from records import ImageEvaluatorRecord
+from iqaevaluator.normalization import MinMax
+from iqaevaluator.records import ImageEvaluatorRecord
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +233,7 @@ class TestRunEvaluation:
         p = tmp_path / "vol.nii"
         nib.save(img, str(p))
 
-        from image_loader import _load_nifti
+        from iqaevaluator.image_loader import _load_nifti
         loader = object.__new__(ImageLoader)
         loader.path = p
         loader.suffix = ".nii"
@@ -323,7 +323,7 @@ class TestScaleFieldsOnRecords:
 
     def test_full_reference_run_reports_the_targets_scale(self, tmp_path):
         import nibabel as nib
-        from image_loader import load_pair
+        from iqaevaluator.image_loader import load_pair
         target = np.random.default_rng(0).random((16, 16, 3)) * 800
         for name, arr in (("inp.nii", 2 * target + 500), ("tgt.nii", target)):
             nib.save(nib.Nifti1Image(arr.astype(np.float32), np.eye(4)), str(tmp_path / name))
@@ -343,7 +343,7 @@ class TestScaleFieldsOnRecords:
         # pinning both halves of the behaviour rather than just the new one.
         import math
         import nibabel as nib
-        from image_loader import load_pair
+        from iqaevaluator.image_loader import load_pair
         target = np.random.default_rng(0).random((16, 16, 3)) * 800
         inp_p, tgt_p = tmp_path / "inp.nii", tmp_path / "tgt.nii"
         for path, arr in ((inp_p, 2 * target + 500), (tgt_p, target)):
@@ -361,7 +361,7 @@ class TestScaleFieldsOnRecords:
 
     def test_raw_run_has_no_scale(self, tmp_path):
         import nibabel as nib
-        from normalization import Raw
+        from iqaevaluator.normalization import Raw
         labels = np.zeros((8, 8, 2), dtype=np.int16); labels[:4] = 1
         p = tmp_path / "m.nii"
         nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p))

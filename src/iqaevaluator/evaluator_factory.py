@@ -12,10 +12,10 @@ main.py is scheduled for replacement.
 
 from typing import Optional
 
-from image_loader import ImageLoader
-from iqa_evaluator import IQAEvaluator
-from metrics import MetricRegistry, ScoringMode
-from volume_evaluator import VolumeEvaluator
+from iqaevaluator.image_loader import ImageLoader
+from iqaevaluator.iqa_evaluator import IQAEvaluator
+from iqaevaluator.metrics import MetricRegistry, ScoringMode
+from iqaevaluator.volume_evaluator import VolumeEvaluator
 
 
 def build_evaluator(

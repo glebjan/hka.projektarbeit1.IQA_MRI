@@ -4,13 +4,13 @@ import torch
 from pathlib import Path
 
 # Guard: skip entire module if weights file is absent
-from constants import RESNET50
+from iqaevaluator.constants import RESNET50
 pytestmark = pytest.mark.skipif(
     not Path(RESNET50).exists(),
     reason=f"RadImageNet weights not found at {RESNET50}",
 )
 
-from radimagenet_lpips import (
+from iqaevaluator.radimagenet_lpips import (
     RadImageNetLPIPS,
     _RadImageNetBackbone,
     _remap_backbone_keys,

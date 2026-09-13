@@ -2,8 +2,8 @@
 import pytest
 import torch
 
-from metrics import Metric, MetricRegistry, ModeSupport, PSNR, SSIM
-from volumetric_iqa import MonaiPSNRMetric, MonaiSSIMMetric
+from iqaevaluator.metrics import Metric, MetricRegistry, ModeSupport, PSNR, SSIM
+from iqaevaluator.volumetric_iqa import MonaiPSNRMetric, MonaiSSIMMetric
 
 
 def _volume_pair(noise: float = 0.05):

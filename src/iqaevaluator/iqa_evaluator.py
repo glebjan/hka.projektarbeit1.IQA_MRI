@@ -4,9 +4,9 @@ from typing import Optional
 
 import torch
 
-from image_loader import ImageLoader, strip_all_extensions
-from metrics import DEVICE, MetricChannels, MetricRegistry, MetricSpec
-from records import ImageEvaluatorRecord
+from iqaevaluator.image_loader import ImageLoader, strip_all_extensions
+from iqaevaluator.metrics import DEVICE, MetricChannels, MetricRegistry, MetricSpec
+from iqaevaluator.records import ImageEvaluatorRecord
 
 BATCH_SIZE = 32  # Slices pro Batch-Call. Bei OOM reduzieren.
 

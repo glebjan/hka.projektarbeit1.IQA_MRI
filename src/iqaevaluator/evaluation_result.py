@@ -7,9 +7,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from constants import REPORT
-from metrics import MetricRegistry
-from records import ImageEvaluatorRecord
+from iqaevaluator.constants import REPORT
+from iqaevaluator.metrics import MetricRegistry
+from iqaevaluator.records import ImageEvaluatorRecord
 
 _SLICE_SUFFIX = re.compile(r"_s\d+$")
 

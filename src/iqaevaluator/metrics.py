@@ -27,10 +27,10 @@ from typing import Callable, Literal, Optional, Protocol, Sequence, runtime_chec
 import pyiqa
 import torch
 
-import radimagenet_lpips  # noqa: F401 — registers RadImageNetLPIPS in pyiqa
-import clip_iqa_medical   # noqa: F401 — registers ClipIQALung / ClipIQABrain in pyiqa
+from iqaevaluator import radimagenet_lpips  # noqa: F401 — registers RadImageNetLPIPS in pyiqa
+from iqaevaluator import clip_iqa_medical   # noqa: F401 — registers ClipIQALung / ClipIQABrain in pyiqa
 
-from constants import RESNET50
+from iqaevaluator.constants import RESNET50
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -263,7 +263,7 @@ def _volumetric_iqa_factory(kind: str) -> Callable[[Optional[Spacing]], Metric]:
     IQA module being loaded for a slice-only run.
     """
     def build(spacing: Optional[Spacing]) -> Metric:
-        from volumetric_iqa import MonaiPSNRMetric, MonaiSSIMMetric
+        from iqaevaluator.volumetric_iqa import MonaiPSNRMetric, MonaiSSIMMetric
         return MonaiPSNRMetric() if kind == "psnr" else MonaiSSIMMetric()
 
     return build
@@ -272,17 +272,17 @@ def _volumetric_iqa_factory(kind: str) -> Callable[[Optional[Spacing]], Metric]:
 # Imported here (rather than alongside the other module-level imports above)
 # to avoid a circular import: monai_metrics.py does `from metrics import
 # MetricSpec`, which requires MetricSpec to already be defined in this module.
-from segmentation_metrics.monai_metrics import (
+from iqaevaluator.segmentation_metrics.monai_metrics import (
     DICE, HAUSDORFF95, NSD, ASSD, PANOPTIC_QUALITY,
 )
-from segmentation_metrics.boundary_iou import BOUNDARY_IOU
-from segmentation_metrics.volume_metrics import (
+from iqaevaluator.segmentation_metrics.boundary_iou import BOUNDARY_IOU
+from iqaevaluator.segmentation_metrics.volume_metrics import (
     VS, VS_SIGNED, V_PRED, V_GT, TP,
 )
 
 # Same cycle, same reason: dreamsim_metric.py does `from metrics import
 # MetricSpec`, so this import has to come after MetricSpec is defined.
-from dreamsim_metric import DREAMSIM, dreamsim_spec
+from iqaevaluator.dreamsim_metric import DREAMSIM, dreamsim_spec
 
 
 # Full-reference metrics (need a target image)

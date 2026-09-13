@@ -5,9 +5,9 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from evaluation_result import EvaluationResult, _EvaluatedImage
-from records import ImageEvaluatorRecord
-from metrics import MetricRegistry, PSNR, SSIM
+from iqaevaluator.evaluation_result import EvaluationResult, _EvaluatedImage
+from iqaevaluator.records import ImageEvaluatorRecord
+from iqaevaluator.metrics import MetricRegistry, PSNR, SSIM
 
 
 def _make_result(n_images: int = 2, slices_each: int = 2,
@@ -74,8 +74,8 @@ class TestToFrame:
 class TestGenerateReport:
     def _build_result_from_real_image(self, tmp_path: Path) -> EvaluationResult:
         """Create a minimal real EvaluationResult from a synthetic PNG."""
-        from image_loader import ImageLoader
-        from iqa_evaluator import IQAEvaluator
+        from iqaevaluator.image_loader import ImageLoader
+        from iqaevaluator.iqa_evaluator import IQAEvaluator
 
         reg = MetricRegistry(PSNR, SSIM)   # fast metrics only
 
@@ -120,7 +120,7 @@ class TestGenerateReport:
 # aggregate_volumes
 # ---------------------------------------------------------------------------
 
-from segmentation_metrics.volume_metrics import TP, V_GT, V_PRED, VS
+from iqaevaluator.segmentation_metrics.volume_metrics import TP, V_GT, V_PRED, VS
 
 
 def _slice_record(image_id, idx, *, v_pred, v_gt, tp, hd95=None):

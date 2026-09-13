@@ -1,7 +1,7 @@
 """Tests for src/records.py — ImageEvaluatorRecord."""
 import pytest
 
-from records import ImageEvaluatorRecord
+from iqaevaluator.records import ImageEvaluatorRecord
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,7 @@ class TestToDict:
 
 class TestRecordsHasNoMetricsDependency:
     def test_best_slice_per_metric_is_gone(self):
-        import records
+        import iqaevaluator.records as records
         assert not hasattr(records, "best_slice_per_metric")
         assert not hasattr(records, "_record_metric_value")
 

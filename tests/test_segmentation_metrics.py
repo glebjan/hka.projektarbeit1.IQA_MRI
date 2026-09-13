@@ -3,8 +3,8 @@ import numpy as np
 import torch
 import pytest
 
-from metrics import MetricSpec
-from segmentation_metrics.monai_metrics import (
+from iqaevaluator.metrics import MetricSpec
+from iqaevaluator.segmentation_metrics.monai_metrics import (
     MonaiSegmentationMetric,
     dice_metric,
     DICE,
@@ -195,8 +195,8 @@ class TestPanopticQualityMetricBuilder:
 
 import torch
 from monai.metrics import compute_dice
-from metrics import MetricRegistry, ModeSupport
-from segmentation_metrics.monai_metrics import (
+from iqaevaluator.metrics import MetricRegistry, ModeSupport
+from iqaevaluator.segmentation_metrics.monai_metrics import (
     ASSD, DICE, HAUSDORFF95, NSD, PANOPTIC_QUALITY, hausdorff95_metric,
 )
 
@@ -275,8 +275,8 @@ class TestRawLabelMapEndToEnd:
 
     def test_multi_label_mask_loaded_raw_scores_perfect_dice(self, tmp_path):
         import nibabel as nib
-        from image_loader import ImageLoader
-        from normalization import Raw
+        from iqaevaluator.image_loader import ImageLoader
+        from iqaevaluator.normalization import Raw
 
         # Multi-label mask spanning {0, 1, 2, 3} so a min-max scaling has the
         # file's full [0, 3] range to compress into [0, 1]: label 1 -> 0.333

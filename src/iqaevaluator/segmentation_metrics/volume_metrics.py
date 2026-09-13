@@ -28,12 +28,12 @@ from typing import Callable, Optional
 import numpy as np
 import torch
 
-from metrics import MetricSpec, ModeSupport
-from segmentation_metrics.volume import tp as _tp
-from segmentation_metrics.volume import v_gt as _v_gt
-from segmentation_metrics.volume import v_pred as _v_pred
-from segmentation_metrics.volume import vs as _vs
-from segmentation_metrics.volume import vs_signed as _vs_signed
+from iqaevaluator.metrics import MetricSpec, ModeSupport
+from iqaevaluator.segmentation_metrics.volume import tp as _tp
+from iqaevaluator.segmentation_metrics.volume import v_gt as _v_gt
+from iqaevaluator.segmentation_metrics.volume import v_pred as _v_pred
+from iqaevaluator.segmentation_metrics.volume import vs as _vs
+from iqaevaluator.segmentation_metrics.volume import vs_signed as _vs_signed
 
 
 class VolumeFunctionMetric:

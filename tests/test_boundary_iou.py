@@ -4,8 +4,8 @@ import pytest
 import torch
 from scipy.ndimage import binary_erosion
 
-from metrics import MetricSpec
-from segmentation_metrics.boundary_iou import (
+from iqaevaluator.metrics import MetricSpec
+from iqaevaluator.segmentation_metrics.boundary_iou import (
     DEFAULT_DILATION_RATIO,
     boundary_iou,
     boundary_region,
@@ -273,16 +273,16 @@ class TestBoundaryIoUMetricBuilder:
 
 class TestFrameworkRegistration:
     def test_exported_from_metrics(self):
-        import metrics
+        import iqaevaluator.metrics as metrics
         assert metrics.BOUNDARY_IOU is BOUNDARY_IOU
 
     def test_included_in_segmentation_bundle(self):
-        from metrics import SEGMENTATION_METRICS
+        from iqaevaluator.metrics import SEGMENTATION_METRICS
         assert BOUNDARY_IOU in SEGMENTATION_METRICS
 
     def test_not_in_builtin_bundle(self):
         """main.py's raw-image CLI must stay unaffected by segmentation metrics."""
-        from metrics import BUILTIN_METRICS
+        from iqaevaluator.metrics import BUILTIN_METRICS
         assert BOUNDARY_IOU not in BUILTIN_METRICS
 
     def test_reexported_from_main(self):
@@ -290,7 +290,7 @@ class TestFrameworkRegistration:
         assert main.BOUNDARY_IOU is BOUNDARY_IOU
 
     def test_registry_round_trip(self):
-        from metrics import MetricRegistry
+        from iqaevaluator.metrics import MetricRegistry
         registry = MetricRegistry(BOUNDARY_IOU)
         assert "boundary_iou" in registry.direction
         assert registry.direction["boundary_iou"] == "higher_is_better"
@@ -303,8 +303,8 @@ class TestFrameworkRegistration:
 # nD boundary bands and volume mode
 # ---------------------------------------------------------------------------
 
-from metrics import MetricRegistry, ModeSupport
-from segmentation_metrics.boundary_iou import band_width
+from iqaevaluator.metrics import MetricRegistry, ModeSupport
+from iqaevaluator.segmentation_metrics.boundary_iou import band_width
 
 
 def _cube(shape=(10, 20, 20), lo=(2, 5, 5), hi=(8, 15, 15)):

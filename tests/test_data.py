@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from data import analyze
+from iqaevaluator.data import analyze
 
 
 IMG_SIZE = 96

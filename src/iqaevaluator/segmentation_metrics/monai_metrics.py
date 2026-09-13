@@ -28,9 +28,9 @@ Usage: each builder (`dice_metric()`, `hausdorff95_metric()`, etc.) returns a
 registry to `IQAEvaluator(registry=registry, ...)`. The evaluator looks up
 and lazily instantiates each spec's metric from the registry when it runs.
 
-    from metrics import MetricRegistry
-    from segmentation_metrics.monai_metrics import DICE, HAUSDORFF95
-    from iqa_evaluator import IQAEvaluator
+    from iqaevaluator.metrics import MetricRegistry
+    from iqaevaluator.segmentation_metrics.monai_metrics import DICE, HAUSDORFF95
+    from iqaevaluator.iqa_evaluator import IQAEvaluator
 
     registry = MetricRegistry(DICE, HAUSDORFF95)
     evaluator = IQAEvaluator(registry=registry, ...)
@@ -51,7 +51,7 @@ from monai.metrics import (
     compute_surface_dice,
 )
 
-from metrics import MetricSpec, ModeSupport, Spacing
+from iqaevaluator.metrics import MetricSpec, ModeSupport, Spacing
 
 DOMAIN_MEDICAL = "medical (MONAI)"
 

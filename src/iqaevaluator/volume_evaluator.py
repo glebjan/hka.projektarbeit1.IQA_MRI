@@ -28,10 +28,10 @@ from typing import Optional
 
 import torch
 
-from image_loader import ImageLoader, strip_all_extensions
-from iqa_evaluator import IQAEvaluator
-from metrics import DEVICE, MetricChannels, MetricRegistry, MetricSpec, ModeUnsupported
-from records import ImageEvaluatorRecord
+from iqaevaluator.image_loader import ImageLoader, strip_all_extensions
+from iqaevaluator.iqa_evaluator import IQAEvaluator
+from iqaevaluator.metrics import DEVICE, MetricChannels, MetricRegistry, MetricSpec, ModeUnsupported
+from iqaevaluator.records import ImageEvaluatorRecord
 
 
 class VolumeEvaluator(IQAEvaluator):

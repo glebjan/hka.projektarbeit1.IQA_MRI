@@ -7,9 +7,9 @@ import pytest
 from PIL import Image
 
 import main as main_module
-from evaluation_result import EvaluationResult
-from iqa_evaluator import IQAEvaluator
-from metrics import MetricRegistry, PSNR, SSIM
+from iqaevaluator.evaluation_result import EvaluationResult
+from iqaevaluator.iqa_evaluator import IQAEvaluator
+from iqaevaluator.metrics import MetricRegistry, PSNR, SSIM
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +174,7 @@ class TestEvaluateRegistryThreading:
             seen.append(registry)
             real_init(self, input_image, target_image, registry, source_model)
 
-        monkeypatch.setattr("iqa_evaluator.IQAEvaluator.__init__", spy_init)
+        monkeypatch.setattr("iqaevaluator.iqa_evaluator.IQAEvaluator.__init__", spy_init)
 
         _make_png(tmp_path / "a.png", seed=0)
         _make_png(tmp_path / "b.png", seed=1)
@@ -211,7 +211,7 @@ class TestEvaluateRegistryThreading:
 import pytest
 
 from main import evaluate, report_skipped_metrics
-from metrics import MetricRegistry, MetricSpec, ModeSupport, ModeUnsupported, SkippedMetric
+from iqaevaluator.metrics import MetricRegistry, MetricSpec, ModeSupport, ModeUnsupported, SkippedMetric
 
 
 def _spec(name, *, volume, reason="only reads flat pictures"):
@@ -358,7 +358,7 @@ class TestNormalizationOption:
         assert df["normalization"].iloc[0] == "minmax"
 
     def test_strategy_is_passed_to_the_loader(self, tmp_path):
-        from normalization import Percentile
+        from iqaevaluator.normalization import Percentile
         inp = _make_png(tmp_path / "inp.png")
         df = evaluate(inp, registry=MetricRegistry(PSNR), normalization=Percentile()).to_frame()
         assert df["normalization"].iloc[0] == "percentile_0.5_99.5"
@@ -366,7 +366,7 @@ class TestNormalizationOption:
     def test_full_reference_run_uses_the_targets_range(self, tmp_path):
         import nibabel as nib
         import numpy as np
-        from image_loader import ImageLoader
+        from iqaevaluator.image_loader import ImageLoader
         target = np.random.default_rng(0).random((16, 16, 3)) * 800
         inp_p = tmp_path / "inp.nii"; tgt_p = tmp_path / "tgt.nii"
         nib.save(nib.Nifti1Image((2 * target + 500).astype(np.float32), np.eye(4)), str(inp_p))
@@ -378,7 +378,7 @@ class TestNormalizationOption:
         assert df["input_max"].iloc[0] > tgt_range.hi
 
     def test_main_reexports_the_strategies(self):
-        from normalization import MinMax, Percentile, Raw
+        from iqaevaluator.normalization import MinMax, Percentile, Raw
         assert main_module.MinMax is MinMax
         assert main_module.Percentile is Percentile
         assert main_module.Raw is Raw

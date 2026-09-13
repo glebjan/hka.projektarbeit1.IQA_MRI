@@ -10,7 +10,7 @@ import SimpleITK as sitk
 import torch
 from PIL import Image
 
-from image_loader import (
+from iqaevaluator.image_loader import (
     ImageLoader,
     _dicom_array_to_depth_first,
     _load_nifti,
@@ -24,7 +24,7 @@ from image_loader import (
     _shared_prefix_length,
     load_pair,
 )
-from normalization import IntensityRange, MinMax, Percentile, Raw
+from iqaevaluator.normalization import IntensityRange, MinMax, Percentile, Raw
 
 IMG_SIZE = 96  # must match tests/conftest.py
 
@@ -129,7 +129,7 @@ class TestLoadDicom:
     def test_loads_and_normalised(self, tmp_path):
         arr = np.random.default_rng(0).integers(100, 2000, (64, 64), dtype=np.uint16)
         p = self._make_dicom(tmp_path / "test.dcm", arr)
-        from image_loader import _load_dicom
+        from iqaevaluator.image_loader import _load_dicom
         t = ImageLoader(p).tensor
         assert t.shape[1] == 1  # channel dim
         assert float(t.min()) >= 0.0
@@ -139,7 +139,7 @@ class TestLoadDicom:
         arr = np.zeros((64, 64), dtype=np.uint16)
         arr[:32, :] = 1000
         p = self._make_dicom(tmp_path / "m1.dcm", arr, photometric="MONOCHROME1")
-        from image_loader import _load_dicom
+        from iqaevaluator.image_loader import _load_dicom
         t = ImageLoader(p).tensor
         # After MONOCHROME1 inversion the originally-bright top half should now
         # have lower normalised values than the originally-dark bottom half.

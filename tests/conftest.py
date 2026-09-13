@@ -1,7 +1,8 @@
 """Shared fixtures for all tests.
 
-sys.path is patched so that flat imports like `from metrics import ...`
-work the same way as `PYTHONPATH=src python ...`.
+The package itself is imported as `iqaevaluator.*` from the editable install
+(`hatch env create`, or `uv pip install -e .`). src/ is still put on sys.path
+because `main.py` is a script next to the package, not part of it.
 """
 import sys
 import warnings
@@ -11,7 +12,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-# Make src/ importable with bare module names (mirrors PYTHONPATH=src).
+# Make src/main.py importable as `main` (it ships as a script, not in the package).
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 warnings.filterwarnings("ignore")

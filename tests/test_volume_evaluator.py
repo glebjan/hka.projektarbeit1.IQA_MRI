@@ -5,11 +5,11 @@ import numpy as np
 import pytest
 import torch
 
-from evaluator_factory import build_evaluator
-from image_loader import ImageLoader
-from iqa_evaluator import IQAEvaluator
-from metrics import MetricRegistry, MetricSpec, ModeSupport, ModeUnsupported
-from volume_evaluator import VolumeEvaluator
+from iqaevaluator.evaluator_factory import build_evaluator
+from iqaevaluator.image_loader import ImageLoader
+from iqaevaluator.iqa_evaluator import IQAEvaluator
+from iqaevaluator.metrics import MetricRegistry, MetricSpec, ModeSupport, ModeUnsupported
+from iqaevaluator.volume_evaluator import VolumeEvaluator
 
 
 class _ShapeSpy:
@@ -154,7 +154,7 @@ class TestSliceRecordsUnchanged:
 
 class TestScaleFieldsInVolumeMode:
     def test_volume_row_carries_the_scale(self, nifti_volume):
-        from metrics import PSNR
+        from iqaevaluator.metrics import PSNR
         loader = ImageLoader(nifti_volume)
         rec = VolumeEvaluator(loader, None, MetricRegistry(PSNR)).run_evaluation()[0]
         assert rec.normalization == "minmax"

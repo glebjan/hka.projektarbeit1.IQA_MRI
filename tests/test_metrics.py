@@ -4,7 +4,7 @@ import math
 import torch
 import pytest
 
-from metrics import (
+from iqaevaluator.metrics import (
     DEVICE,
     MetricRegistry,
     MetricSpec,
@@ -17,7 +17,7 @@ from metrics import (
     SSIM,
 )
 
-from segmentation_metrics.monai_metrics import DICE as _DICE  # sanity: same objects re-exported
+from iqaevaluator.segmentation_metrics.monai_metrics import DICE as _DICE  # sanity: same objects re-exported
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +130,7 @@ class TestMetricRegistryInstances:
         assert reg.get_metric("custom") is fake_metric
 
     def test_no_module_level_singleton(self):
-        import metrics
+        import iqaevaluator.metrics as metrics
         assert not hasattr(metrics, "registry"), "global registry singleton must be gone"
         assert not callable(getattr(metrics, "register_metric", None)), \
             "free register_metric function must be gone"
@@ -418,7 +418,7 @@ class TestSegmentationMetrics:
             assert name in names, f"'{name}' missing after explicit registration"
 
     def test_metrics_module_reexports_same_objects(self):
-        from metrics import DICE
+        from iqaevaluator.metrics import DICE
         assert DICE is _DICE
 
 
@@ -445,7 +445,7 @@ class TestMetricSpecDescriptionFields:
 # Mode capability model
 # ---------------------------------------------------------------------------
 
-from metrics import (
+from iqaevaluator.metrics import (
     ModeUnsupported,
     SkippedMetric,
     REASON_DEEP_2D,
@@ -574,12 +574,12 @@ class TestNotRankedDirection:
 
 class TestDreamSimIsReachableButOptIn:
     def test_metrics_module_reexports_the_spec(self):
-        from dreamsim_metric import DREAMSIM as _DREAMSIM
-        from metrics import DREAMSIM
+        from iqaevaluator.dreamsim_metric import DREAMSIM as _DREAMSIM
+        from iqaevaluator.metrics import DREAMSIM
         assert DREAMSIM is _DREAMSIM
 
     def test_metrics_module_reexports_the_factory(self):
-        from metrics import dreamsim_spec
+        from iqaevaluator.metrics import dreamsim_spec
         assert dreamsim_spec().name == "dreamsim"
 
     def test_kept_out_of_builtin_metrics(self):

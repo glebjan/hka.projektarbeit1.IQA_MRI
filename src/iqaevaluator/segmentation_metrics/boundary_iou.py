@@ -35,8 +35,8 @@ Usage: import `metrics` before this module — `metrics` late-imports
 `segmentation_metrics.*`, which import `MetricSpec` back from `metrics`, so
 importing this module first raises a partially-initialized-module error.
 
-    import metrics
-    from segmentation_metrics.boundary_iou import BOUNDARY_IOU
+    import iqaevaluator.metrics as metrics
+    from iqaevaluator.segmentation_metrics.boundary_iou import BOUNDARY_IOU
 """
 from __future__ import annotations
 
@@ -46,8 +46,8 @@ import numpy as np
 import torch
 from scipy.ndimage import distance_transform_cdt, distance_transform_edt
 
-from metrics import MetricSpec, ModeSupport
-from segmentation_metrics.volume import as_mask
+from iqaevaluator.metrics import MetricSpec, ModeSupport
+from iqaevaluator.segmentation_metrics.volume import as_mask
 
 DEFAULT_DILATION_RATIO = 0.02
 """Paper default: boundary band width as a fraction of the image diagonal."""

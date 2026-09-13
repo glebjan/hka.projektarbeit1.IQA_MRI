@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from segmentation_metrics.volume import as_mask
+from iqaevaluator.segmentation_metrics.volume import as_mask
 
 
 def test_as_mask_bool_passthrough():
@@ -35,7 +35,7 @@ def test_as_mask_unsupported_dtype_raises():
         as_mask(x)
 
 
-from segmentation_metrics.volume import v_pred, v_gt, tp, vs, vs_signed
+from iqaevaluator.segmentation_metrics.volume import v_pred, v_gt, tp, vs, vs_signed
 
 
 def _disk_mask(shape, center, radius):
@@ -98,7 +98,7 @@ def test_shape_mismatch_raises_with_both_shapes():
 
 
 import pandas as pd
-from segmentation_metrics.volume import aggregate_patient
+from iqaevaluator.segmentation_metrics.volume import aggregate_patient
 
 
 def test_aggregate_mean_of_ratios_differs_from_volume_ratio():
@@ -159,8 +159,8 @@ def test_vs_vs_signed_identity_random_masks(seed):
 class TestRawLabelMapEndToEnd:
     def test_one_vs_rest_on_a_raw_loaded_label_map(self, tmp_path):
         import nibabel as nib
-        from image_loader import ImageLoader
-        from normalization import Raw
+        from iqaevaluator.image_loader import ImageLoader
+        from iqaevaluator.normalization import Raw
         labels = np.zeros((8, 8, 2), dtype=np.int16)
         labels[:4, :, 0] = 1
         labels[4:, :, 0] = 2

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 import torch
 
-from normalization import (
+from iqaevaluator.normalization import (
     NORMALIZER_NAMES, FixedRange, IntensityRange, MinMax, Normalizer,
     Percentile, Raw, normalizer_from_name, scale,
 )

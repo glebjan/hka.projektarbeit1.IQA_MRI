@@ -1,4 +1,4 @@
-# Track only: src/, requirements.txt, diagram/
+# Track only: src/, tests/, docs/, diagram/, pyproject.toml
 
 # Ignore everything
 *
@@ -10,7 +10,7 @@
 !src/**
 !tests/
 !tests/**
-!requirements.txt
+!pyproject.toml
 !models/
 !models/**
 

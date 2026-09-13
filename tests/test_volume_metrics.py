@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 import torch
 
-from metrics import MetricRegistry, ModeSupport, SEGMENTATION_METRICS
-from segmentation_metrics.volume_metrics import (
+from iqaevaluator.metrics import MetricRegistry, ModeSupport, SEGMENTATION_METRICS
+from iqaevaluator.segmentation_metrics.volume_metrics import (
     TP, V_GT, V_PRED, VS, VS_SIGNED, VOLUME_METRICS,
 )
 
@@ -102,9 +102,9 @@ class TestCrossCheck:
         """Volume-mode dice and aggregate_volumes()'s dice must agree exactly."""
         import nibabel as nib
         from main import evaluate
-        from metrics import MetricRegistry
-        from segmentation_metrics.monai_metrics import DICE
-        from segmentation_metrics.volume_metrics import TP, V_GT, V_PRED
+        from iqaevaluator.metrics import MetricRegistry
+        from iqaevaluator.segmentation_metrics.monai_metrics import DICE
+        from iqaevaluator.segmentation_metrics.volume_metrics import TP, V_GT, V_PRED
 
         # Every slice carries foreground on purpose. A blank prediction slice
         # makes aggregate_volumes() return NaN by design — a per-slice run
