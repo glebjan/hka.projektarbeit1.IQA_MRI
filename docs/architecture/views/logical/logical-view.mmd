@@ -1,75 +1,169 @@
 classDiagram
     direction TB
 
+    class LoadedImage {
+        +raw
+        +spacing
+        +is_volumetric
+    }
+
     class ImageLoader {
-        +path: Path
-        +tensor: Tensor (D,1,H,W)
-        +rgb_tensor: Tensor (D,3,H,W)
-        +empty_slice_mask: Tensor
+        +path
+        +normalizer
+        +raw
+        +raw_range
+        +intensity_range
+        +tensor
+        +rgb_tensor
+        +spacing
+        +is_volumetric
+        +empty_slice_mask
         +log_tensor_shape()
     }
 
-    class MetricSpec {
-        <<registry entry>>
-        +name: str
-        +direction: higher|lower
-        +reference: bool
-        +channels: gray|rgb
+    class Normalizer {
+        <<protocol>>
+        +name
+        +range_of(raw)
+        +apply(raw, source)
+        +empty_slices(raw)
     }
 
+    class MinMax {
+        +name
+    }
+    class Percentile {
+        +lower
+        +upper
+        +name
+    }
+    class FixedRange {
+        +range
+        +name
+    }
+    class Mask {
+        +label
+        +threshold
+        +name
+    }
+    class Raw {
+        +name
+    }
+
+    Normalizer <|.. MinMax : implements
+    Normalizer <|.. Percentile : implements
+    Normalizer <|.. FixedRange : implements
+    Normalizer <|.. Mask : implements
+    Normalizer <|.. Raw : implements
+
+    class MetricSpec {
+        +name
+        +direction
+        +reference
+        +channels
+        +slice_mode
+        +volume_mode
+        +builtin
+        +description
+        +domain
+    }
+
+    class ModeSupport {
+        +factory
+    }
+    class ModeUnsupported {
+        +reason
+    }
+
+    class Metric {
+        <<protocol>>
+        +__call__(input, target)
+    }
+
+    class PyIQAMetric
+    class DreamSimMetric
+    class MonaiSegmentationMetric
+    class MonaiPanopticQualityMetric
+    class VolumeFunctionMetric
+    class BoundaryIoUMetric
+    class MonaiPSNRMetric
+    class MonaiSSIMMetric
+
+    Metric <|.. PyIQAMetric : implements
+    Metric <|.. DreamSimMetric : implements
+    Metric <|.. MonaiSegmentationMetric : implements
+    Metric <|.. MonaiPanopticQualityMetric : implements
+    Metric <|.. VolumeFunctionMetric : implements
+    Metric <|.. BoundaryIoUMetric : implements
+    Metric <|.. MonaiPSNRMetric : implements
+    Metric <|.. MonaiSSIMMetric : implements
+
     class MetricRegistry {
-        <<static list>>
-        _METRIC_SPECS: list~MetricSpec~
-        _get_metric(name) Module
+        +register(specs)
+        +register_metric(name, metric, direction, reference, channels, volume_factory, volume_reason)
+        +get_metric(name, mode, spacing)
+        +select(mode)
+        +specs
+        +direction
     }
 
     class IQAEvaluator {
-        +input: ImageLoader
-        +target: ImageLoader?
-        +run_evaluation() list~ImageEvaluatorRecord~
-        -_compute_batch(spec, indices)
+        +input
+        +target
+        +registry
+        +source_model
+        +run_evaluation()
+    }
+
+    class VolumeEvaluator {
+        +spacing
+        +run_evaluation()
+    }
+
+    class build_evaluator {
+        <<factory function>>
+        +build_evaluator(input, target, registry, mode, source_model)
     }
 
     class ImageEvaluatorRecord {
-        +image_id: str
-        +slice_index: int
-        +psnr, ssim, lpips, ...: float?
+        +image_id
+        +source_model
+        +mode
+        +scoring
+        +slice_index
+        +is_empty
+        +normalization
+        +scale_lo
+        +scale_hi
+        +input_min
+        +input_max
+        +extra
         +to_dict()
     }
 
     class EvaluationResult {
-        -_images: list~_EvaluatedImage~
-        +to_frame() DataFrame
-        +generate_report(path) DataFrame
+        +from_records(records, registry)
+        +to_frame()
+        +aggregate_volumes()
+        +generate_report(path)
     }
 
-    class MaskWriter {
-        +write(loader, records) list~Path~
-        -_segment_otsu(slice)
-    }
+    IQAEvaluator <|-- VolumeEvaluator : extends
 
-    class evaluate_fn {
-        <<top-level function>>
-        evaluate(input_path, target_path) EvaluationResult
-    }
+    ImageLoader ..> LoadedImage : creates
+    ImageLoader --> Normalizer : holds
 
-    class ExternalPyIQAPlugins {
-        <<import side-effect>>
-        RadImageNetLPIPS
-        ClipIQALung
-        ClipIQABrain
-    }
+    IQAEvaluator --> ImageLoader : reads
+    IQAEvaluator --> MetricRegistry : holds
+    IQAEvaluator ..> ImageEvaluatorRecord : creates
 
-    evaluate_fn ..> ImageLoader : creates
-    evaluate_fn ..> IQAEvaluator : creates
-    evaluate_fn ..> EvaluationResult : returns
+    MetricRegistry --> MetricSpec : holds
+    MetricRegistry ..> Metric : builds
+    MetricSpec --> ModeSupport : holds
+    MetricSpec --> ModeUnsupported : holds
 
-    IQAEvaluator --> ImageLoader : reads tensor
-    IQAEvaluator --> MetricRegistry : iterates specs
-    IQAEvaluator --> ImageEvaluatorRecord : produces
-    MetricRegistry o-- MetricSpec : contains
-    MetricRegistry ..> ExternalPyIQAPlugins : resolves via pyiqa.create_metric
+    build_evaluator ..> IQAEvaluator : creates
+    build_evaluator ..> VolumeEvaluator : creates
 
-    EvaluationResult o-- ImageEvaluatorRecord : holds
-    EvaluationResult --> MaskWriter : delegates PNG output
-    MaskWriter --> ImageEvaluatorRecord : reads best-slice scores
+    EvaluationResult --> ImageEvaluatorRecord : holds
+    EvaluationResult ..> MetricRegistry : reads

@@ -1,0 +1,20 @@
+flowchart LR
+    A["Pfadpaar: Input, Target"] --> B["Paarbildung: laengster gemeinsamer Praefix"]
+    B --> C["Loader: ImageLoader / LoadedImage"]
+    C --> D{"Full-Reference oder No-Reference?"}
+    D -->|Full-Reference| E["Normalisierung auf Zielbereich (Target-Skala)"]
+    D -->|No-Reference| F["Normalisierung auf eigenem Bereich (Bild-Skala)"]
+    E --> G["Evaluatorwahl nach Modus"]
+    F --> G
+    G -->|slice| H["Batch je Metrik ueber alle Schichten"]
+    G -->|volume| I["ein Sample je Volumen"]
+    H --> J{"Skip-Entscheidung"}
+    I --> J
+    J -->|Modus nicht unterstuetzt| K["Metrik uebersprungen, Grund gemeldet"]
+    J -->|Schicht beidseitig leer| K
+    J -->|sonst| L["Metrik berechnet"]
+    K --> M["Records"]
+    L --> M
+    M --> N["Ergebnisobjekt"]
+    N --> O["Aggregation ueber Volumen"]
+    N --> P["CSV-Bericht"]
