@@ -636,3 +636,26 @@ class TestColourDecoding:
         monkeypatch.setitem(il._LOADERS, ".nrrd", lambda _path: fake)
         with pytest.raises(ValueError, match="single channel"):
             _ = ImageLoader(p).raw
+
+
+class TestChannelRequests:
+    def test_colour_image_serves_both_shapes(self, tmp_path):
+        arr = np.random.default_rng(11).integers(0, 256, (16, 16, 3), dtype="uint8")
+        p = tmp_path / "colour.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p)
+        assert loader.rgb_tensor.shape == (1, 3, 16, 16)
+        assert loader.gray_tensor.shape == (1, 1, 16, 16)
+        # gray_tensor really is a weighted mix, not just the first channel.
+        assert not torch.allclose(loader.gray_tensor[:, 0], loader.tensor[:, 0])
+
+    def test_grayscale_image_serves_both_shapes(self, tmp_path):
+        arr = np.random.default_rng(12).integers(0, 256, (16, 16), dtype="uint8")
+        p = tmp_path / "gray.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p)
+        assert loader.rgb_tensor.shape == (1, 3, 16, 16)
+        assert loader.gray_tensor.shape == (1, 1, 16, 16)
+        # Replication, so all three channels are identical.
+        assert torch.equal(loader.rgb_tensor[:, 0], loader.rgb_tensor[:, 2])
+        assert torch.equal(loader.gray_tensor, loader.tensor)

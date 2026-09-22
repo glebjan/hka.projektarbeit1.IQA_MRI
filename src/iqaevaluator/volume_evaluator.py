@@ -73,7 +73,7 @@ class VolumeEvaluator(IQAEvaluator):
 
     def _pick_volume(self, img: ImageLoader, channels: MetricChannels) -> torch.Tensor:
         """(D, C, H, W) -> (1, C, D, H, W): the whole volume as a single sample."""
-        base = img.tensor if channels == "gray" else img.rgb_tensor
+        base = img.gray_tensor if channels == "gray" else img.rgb_tensor
         return base.permute(1, 0, 2, 3).unsqueeze(0)
 
     def _compute_volume(self, spec: MetricSpec) -> Optional[float]:

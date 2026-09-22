@@ -323,7 +323,20 @@ class ImageLoader:
 
     @property
     def rgb_tensor(self) -> torch.Tensor:
-        return self.tensor.expand(-1, 3, -1, -1)
+        """(D, 3, H, W) — colour as it is, greyscale replicated three times."""
+        tensor = self.tensor
+        return tensor if tensor.shape[1] == 3 else tensor.expand(-1, 3, -1, -1)
+
+    @property
+    def gray_tensor(self) -> torch.Tensor:
+        """(D, 1, H, W) — colour reduced to luma, greyscale as it is."""
+        tensor = self.tensor
+        if tensor.shape[1] == 1:
+            return tensor
+        weights = torch.tensor(
+            _LUMA_WEIGHTS, dtype=tensor.dtype, device=tensor.device
+        ).view(1, 3, 1, 1)
+        return (tensor * weights).sum(dim=1, keepdim=True)
 
     @property
     def empty_slice_mask(self) -> torch.Tensor:

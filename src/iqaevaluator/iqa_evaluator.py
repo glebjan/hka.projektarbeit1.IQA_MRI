@@ -45,7 +45,7 @@ class IQAEvaluator:
     # ------------------------------------------------------------------
 
     def _pick_tensor_batch(self, img: ImageLoader, channels: MetricChannels, indices: list[int]) -> torch.Tensor:
-        base = img.tensor if channels == "gray" else img.rgb_tensor
+        base = img.gray_tensor if channels == "gray" else img.rgb_tensor
         return base[indices]  # (len(indices), C, H, W)
 
     def _compute_batch(self, spec: MetricSpec, indices: list[int]) -> list[Optional[float]]:

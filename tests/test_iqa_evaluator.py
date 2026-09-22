@@ -2,6 +2,7 @@
 import numpy as np
 import torch
 import pytest
+from PIL import Image
 
 from iqaevaluator.image_loader import ImageLoader, LoadedImage
 from iqaevaluator.iqa_evaluator import IQAEvaluator, BATCH_SIZE
@@ -421,3 +422,52 @@ class TestMaskRunEndToEnd:
         assert records[0].normalization == "mask"
         assert records[0].scale_lo is None and records[0].scale_hi is None
         assert (records[0].input_min, records[0].input_max) == (0.0, 1.0)
+
+
+class TestChannelSelection:
+    def _spec(self, name, channels):
+        from iqaevaluator.metric_spec import MetricSpec, ModeSupport
+
+        seen = {}
+
+        def metric(inp, tgt=None):
+            seen["shape"] = tuple(inp.shape)
+            return [0.0] * inp.shape[0]
+
+        spec = MetricSpec(
+            name=name,
+            direction="higher_is_better",
+            reference=False,
+            channels=channels,
+            builtin=False,
+            slice_mode=ModeSupport(lambda: metric),
+        )
+        return spec, seen
+
+    def _colour_png(self, tmp_path):
+        arr = np.random.default_rng(13).integers(0, 256, (96, 96, 3), dtype="uint8")
+        p = tmp_path / "colour.png"
+        Image.fromarray(arr).save(p)
+        return p
+
+    def test_gray_metric_receives_one_channel(self, tmp_path):
+        from iqaevaluator.image_loader import ImageLoader
+        from iqaevaluator.iqa_evaluator import IQAEvaluator
+        from iqaevaluator.metrics import MetricRegistry
+
+        spec, seen = self._spec("fake_gray", "gray")
+        IQAEvaluator(
+            ImageLoader(self._colour_png(tmp_path)), None, MetricRegistry(spec)
+        ).run_evaluation()
+        assert seen["shape"][1] == 1
+
+    def test_rgb_metric_receives_three_channels(self, tmp_path):
+        from iqaevaluator.image_loader import ImageLoader
+        from iqaevaluator.iqa_evaluator import IQAEvaluator
+        from iqaevaluator.metrics import MetricRegistry
+
+        spec, seen = self._spec("fake_rgb", "rgb")
+        IQAEvaluator(
+            ImageLoader(self._colour_png(tmp_path)), None, MetricRegistry(spec)
+        ).run_evaluation()
+        assert seen["shape"][1] == 3
