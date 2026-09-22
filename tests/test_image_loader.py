@@ -749,3 +749,21 @@ class TestPairChannelHarmonisation:
         _ = loader.tensor
         with pytest.raises(RuntimeError, match="before"):
             loader.force_gray()
+
+    def test_colour_target_range_comes_from_its_luma(self, tmp_path):
+        # Target is colour, input greyscale: the target's range must be read
+        # from its luma, not from its widest channel.
+        colour = np.zeros((32, 32, 3), dtype="uint8")
+        colour[..., 0] = 255   # red 255, green 0, blue 0 -> luma about 76
+        gray = np.full((32, 32), 40, dtype="uint8")
+        inp = tmp_path / "inp.png"
+        tgt = tmp_path / "tgt.png"
+        Image.fromarray(gray).save(inp)
+        Image.fromarray(colour).save(tgt)
+        loaded_input, loaded_target = load_pair(inp, tgt, MinMax())
+        assert loaded_input.channels == 1 and loaded_target.channels == 1
+        # A constant luma image: lo == hi, and both sit at the luma value, not at 0/255.
+        rng = loaded_target.intensity_range
+        assert rng is not None
+        assert rng.lo == rng.hi
+        assert 70.0 <= rng.lo <= 82.0

@@ -399,6 +399,11 @@ class ImageLoader:
         run before anything is derived from the raw data, because the range
         and the tensor would otherwise be built from the colour version.
         """
+        if isinstance(self.normalizer, (Mask, Raw)):
+            raise RuntimeError(
+                "force_gray() is not valid for masks or instance maps: mixing "
+                "their channels would invent labels. Supply a single-channel file."
+            )
         if self._tensor is not None or self._intensity_range_known:
             raise RuntimeError(
                 "force_gray() must be called before the tensor or the intensity "
