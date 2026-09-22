@@ -659,3 +659,41 @@ class TestChannelRequests:
         # Replication, so all three channels are identical.
         assert torch.equal(loader.rgb_tensor[:, 0], loader.rgb_tensor[:, 2])
         assert torch.equal(loader.gray_tensor, loader.tensor)
+
+
+class TestColourMasks:
+    def _save(self, tmp_path, arr, name="mask.png"):
+        p = tmp_path / name
+        Image.fromarray(arr).save(p)
+        return p
+
+    def test_grey_rgb_mask_is_accepted(self, tmp_path):
+        flat = np.zeros((16, 16), dtype="uint8")
+        flat[4:8, 4:8] = 255
+        rgb = np.stack([flat] * 3, axis=-1)
+        loader = ImageLoader(self._save(tmp_path, rgb), Mask())
+        assert loader.channels == 1
+        assert loader.tensor.shape == (1, 1, 16, 16)
+        assert set(loader.tensor.unique().tolist()) <= {0.0, 1.0}
+
+    def test_real_colour_mask_is_rejected(self, tmp_path):
+        arr = np.zeros((16, 16, 3), dtype="uint8")
+        arr[4:8, 4:8, 0] = 255   # red label
+        arr[9:12, 9:12, 1] = 255  # green label
+        loader = ImageLoader(self._save(tmp_path, arr, "labels.png"), Mask())
+        with pytest.raises(ValueError, match="colour"):
+            _ = loader.tensor
+
+    def test_raw_strategy_rejects_colour_too(self, tmp_path):
+        arr = np.zeros((16, 16, 3), dtype="uint8")
+        arr[..., 1] = 7
+        loader = ImageLoader(self._save(tmp_path, arr, "instances.png"), Raw())
+        with pytest.raises(ValueError, match="colour"):
+            _ = loader.tensor
+
+    def test_empty_slice_detection_uses_luma(self, tmp_path):
+        arr = np.random.default_rng(14).integers(0, 256, (32, 32, 3), dtype="uint8")
+        loader = ImageLoader(self._save(tmp_path, arr, "busy.png"))
+        mask = loader.empty_slice_mask
+        assert mask.shape == (1,)
+        assert not bool(mask[0])

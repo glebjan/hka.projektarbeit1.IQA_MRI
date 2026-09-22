@@ -19,7 +19,9 @@ import torch
 from PIL import Image
 
 from iqaevaluator.metric_spec import Spacing
-from iqaevaluator.normalization import FixedRange, IntensityRange, MinMax, Normalizer
+from iqaevaluator.normalization import (
+    FixedRange, IntensityRange, Mask, MinMax, Normalizer, Raw,
+)
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,26 @@ def to_luma(raw: np.ndarray) -> np.ndarray:
         return raw
     weights = np.asarray(_LUMA_WEIGHTS, dtype=np.float32)
     return (raw.astype(np.float32) * weights).sum(axis=-1)
+
+
+def collapse_identical_channels(raw: np.ndarray, *, source: str) -> np.ndarray:
+    """(D, H, W, 3) -> (D, H, W) when all channels agree; raise otherwise.
+
+    A greyscale mask stored as RGB is common and harmless. A genuinely
+    coloured label map is not: mixing its channels would invent labels that
+    were never there, and the segmentation metrics would report plausible
+    but wrong numbers.
+    """
+    if raw.ndim == 3:
+        return raw
+    first = raw[..., :1]
+    if not np.array_equal(raw, np.broadcast_to(first, raw.shape)):
+        raise ValueError(
+            f"[{source}] this is a colour image, and a mask or instance map must "
+            "be unambiguous. Supply it as a single-channel file (a 0/1 or 0/255 "
+            "mask, or an integer label map) instead of a coloured rendering."
+        )
+    return raw[..., 0]
 
 
 def _dicom_array_to_depth_first(pixel_array: np.ndarray, photometric: str) -> np.ndarray:
@@ -277,6 +299,8 @@ class ImageLoader:
                     "supported for PNG and JPEG only; convert the file or extract "
                     "the component you want to score."
                 )
+            if isinstance(self.normalizer, (Mask, Raw)):
+                raw = collapse_identical_channels(raw, source=self.path.name)
             self._raw = raw
         return self._raw
 
@@ -355,8 +379,10 @@ class ImageLoader:
 
         Intensity strategies use `normalization.sparse_slices` (a spread/lift
         heuristic on the raw data); `Mask()` counts foreground voxels exactly.
+        Colour is reduced to luma first, so the heuristic keeps the thresholds
+        it was calibrated with.
         """
-        return self.normalizer.empty_slices(self.raw)
+        return self.normalizer.empty_slices(to_luma(self.raw))
 
     def log_tensor_shape(self) -> torch.Size:
         shape = self.tensor.shape
