@@ -608,30 +608,42 @@ class TestColourReachesAChrominanceAwareMetric:
         metric that uses it, not a range-coupling artefact of some other part
         of the pipeline.
 
-        This is an ablation, not one absolute number, so it cannot pass for
-        the wrong reason:
+        This is an ablation over three pairs, not one absolute number, so it
+        cannot pass for the wrong reason:
         - the reference against an exact copy of itself must score
           essentially 1.0 (VSI is higher-is-better with a max of 1.0) —
-          establishing this run's own near-perfect baseline;
+          establishing this run's own near-perfect baseline: 0.9999999079502265;
         - red against green at matched luma must then score clearly below
-          that self-pair baseline, with the margin taken from the baseline
-          itself rather than hardcoded from whatever value happened to be
-          observed once.
+          that self-pair baseline: 0.9417727269941808;
+        - a third pair isolates what the texture (added below only to dodge
+          an unrelated empty-slice guard) does on its own — same colour, flat
+          input against a textured target: 0.9997251737771881.
 
-        A third pair isolates what the texture (added below only to dodge an
-        unrelated empty-slice guard) does on its own: same colour, flat input
-        against a textured target. Making the *textured* image the target
-        matters — `load_pair` scales the input onto the target's own range,
-        so if the flat image were the target instead, every textured pixel
-        above the flat value would clip to the target's maximum and the two
-        scaled tensors would come out bit-identical, an artefact that once
-        made this ablation read as VSI == 1.0 and wrongly look negligible.
-        With the textured image as the target there is headroom, nothing
-        clips, and the measured effect is real: VSI = 0.9110029215151106,
-        clearly below the self-pair baseline (texture does perturb VSI when
-        it appears on only one side) but still clearly above the colour-pair
-        score, because in the colour-pair itself the *same* texture sits on
-        both sides and the colour difference dominates regardless.
+        For these three numbers to mean anything, none of the three pairs may
+        clip. `load_pair` scales the input onto the target's own intensity
+        range, taken over the *whole* raw array (all channels together). Two
+        single-colour images at matched luma do not share a range by
+        construction: red's R channel alone reaches 196-199 while green's own
+        raw range (its G channel) tops out at 100-103, so scaling red onto
+        green's range would push red's entire R channel past 1.0 and clip it
+        to a flat constant — erasing red's texture while green keeps its own,
+        so the two sides would no longer be comparable and the measured gap
+        would mix an actual colour difference with a one-sided texture
+        mismatch. (An earlier version of this test had exactly this bug.)
+
+        The fix: a 0-valued pixel and a 255-valued pixel, in every channel,
+        at the same two corners of all three images (`red`, `green` and
+        `red_flat`). That gives every one of them the same raw range, 0 to
+        255, so every pair here is scaled on that same range and nothing
+        clips on either side — the property that makes the three numbers
+        directly comparable, and the one a later edit to this fixture must
+        not break.
+
+        The honest result: the texture-only pair (0.9997251737771881) sits
+        far closer to the self-pair baseline than the colour pair
+        (0.9417727269941808) does — a matched-luminance colour difference
+        moves VSI much more than this texture does on its own. Colour is not
+        merely "some effect"; it is the dominant one measured here.
         """
         from PIL import Image
         import numpy as np
@@ -645,11 +657,6 @@ class TestColourReachesAChrominanceAwareMetric:
         # in test_image_loader.py) treats a zero-spread slice as background and
         # skips it before any metric runs. A few uint8 levels of texture keep
         # the slice out of that guard without disturbing the matched-luma setup.
-        # The texture-only ablation below (same colour, flat input against a
-        # textured target, so the comparison has headroom instead of clipping
-        # it away) measures this texture's own effect on VSI: 0.9110029215151106
-        # — real, not negligible, but still well above the colour-pair score,
-        # so the colour-pair drop is not merely this texture showing up twice.
         texture = np.random.default_rng(0).integers(0, 4, (96, 96), dtype="uint8")
 
         red = np.zeros((96, 96, 3), dtype="uint8")
@@ -658,9 +665,21 @@ class TestColourReachesAChrominanceAwareMetric:
         red[..., 0] = 196 + texture
         green[..., 1] = 100 + texture
         red_flat = np.zeros((96, 96, 3), dtype="uint8")
-        red_flat[..., 0] = 196  # same colour as `red`, but no texture — used
-        # as the INPUT below, with the textured `red` as the TARGET, so the
-        # target's range has headroom above 196 and nothing clips.
+        red_flat[..., 0] = 196  # same colour as `red`, but no texture
+
+        # Anchor pixels: 0 in every channel at one corner, 255 in every
+        # channel at the opposite corner, on ALL THREE images. Without this,
+        # `load_pair` would scale each pair on whichever image's own colour
+        # channel happens to be narrower, clipping the other side's texture
+        # away (see the docstring). With it, every image's raw range is
+        # exactly [0, 255], every pair below is scaled on that same range,
+        # and no side clips — checked below via `record.is_empty` staying
+        # False, and confirmed while writing this test by inspecting
+        # `ImageLoader.raw_range` directly for every pair (all came out
+        # [0.0, 255.0] on both sides).
+        for arr in (red, green, red_flat):
+            arr[0, 0, :] = 0
+            arr[-1, -1, :] = 255
 
         def _vsi_score(input_arr: np.ndarray, target_arr: np.ndarray, name: str) -> float:
             inp = tmp_path / f"{name}_input.png"
@@ -677,21 +696,22 @@ class TestColourReachesAChrominanceAwareMetric:
 
         self_score = _vsi_score(red, red.copy(), "self")
         colour_score = _vsi_score(red, green, "colour")
-        # Textured image as the TARGET, flat image as the INPUT: the target's
-        # range then has headroom above the flat value, so nothing clips and
-        # the score reflects what the texture actually does (see the class
-        # docstring for why the reverse pairing is an artefact, not a result).
         texture_only_score = _vsi_score(red_flat, red, "texture_only")
 
         assert self_score > 0.999  # reference against itself: essentially perfect
-        # The texture is not negligible on its own (it measurably moves VSI
-        # below the self-pair baseline), but it moves it far less than the
-        # actual colour difference does — both bounds come from this same
-        # run's other ablation pairs, not from a hardcoded number.
+        # The texture alone perturbs VSI (texture_only_score < self_score),
+        # but the matched-luminance colour difference perturbs it far more —
+        # both bounds come from this same run's other ablation pairs, not
+        # from a hardcoded number.
         assert colour_score < texture_only_score < self_score
-        # The pass margin comes from this run's own self-pair baseline, not
-        # from the colour-pair value observed while writing the test.
-        assert colour_score < self_score - 0.05
+        # The margin is fixed and applied to this run's own self-pair score,
+        # not reverse-engineered from the colour-pair value: it is smaller
+        # than round 2's 0.05 because giving all three images the shared
+        # 0/255 anchors (needed to stop the clipping described above) shrinks
+        # the self-vs-colour gap from ~0.12 to ~0.06 — 0.03 still leaves a
+        # comfortable, non-trivial buffer below the observed gap without
+        # being tuned to match it.
+        assert colour_score < self_score - 0.03
 
 
 class TestPSNRExercisesTheLumaPathOnly:
