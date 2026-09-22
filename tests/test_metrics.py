@@ -617,6 +617,21 @@ class TestColourReachesAChrominanceAwareMetric:
           that self-pair baseline, with the margin taken from the baseline
           itself rather than hardcoded from whatever value happened to be
           observed once.
+
+        A third pair isolates what the texture (added below only to dodge an
+        unrelated empty-slice guard) does on its own: same colour, flat input
+        against a textured target. Making the *textured* image the target
+        matters — `load_pair` scales the input onto the target's own range,
+        so if the flat image were the target instead, every textured pixel
+        above the flat value would clip to the target's maximum and the two
+        scaled tensors would come out bit-identical, an artefact that once
+        made this ablation read as VSI == 1.0 and wrongly look negligible.
+        With the textured image as the target there is headroom, nothing
+        clips, and the measured effect is real: VSI = 0.9110029215151106,
+        clearly below the self-pair baseline (texture does perturb VSI when
+        it appears on only one side) but still clearly above the colour-pair
+        score, because in the colour-pair itself the *same* texture sits on
+        both sides and the colour difference dominates regardless.
         """
         from PIL import Image
         import numpy as np
@@ -630,10 +645,11 @@ class TestColourReachesAChrominanceAwareMetric:
         # in test_image_loader.py) treats a zero-spread slice as background and
         # skips it before any metric runs. A few uint8 levels of texture keep
         # the slice out of that guard without disturbing the matched-luma setup.
-        # The texture's own effect on the score is negligible, confirmed below
-        # by the texture-only ablation (same colour, texture vs. no texture:
-        # VSI == 1.0 exactly) — so the drop measured for the colour pair is
-        # attributable to colour, not to this noise.
+        # The texture-only ablation below (same colour, flat input against a
+        # textured target, so the comparison has headroom instead of clipping
+        # it away) measures this texture's own effect on VSI: 0.9110029215151106
+        # — real, not negligible, but still well above the colour-pair score,
+        # so the colour-pair drop is not merely this texture showing up twice.
         texture = np.random.default_rng(0).integers(0, 4, (96, 96), dtype="uint8")
 
         red = np.zeros((96, 96, 3), dtype="uint8")
@@ -642,7 +658,9 @@ class TestColourReachesAChrominanceAwareMetric:
         red[..., 0] = 196 + texture
         green[..., 1] = 100 + texture
         red_flat = np.zeros((96, 96, 3), dtype="uint8")
-        red_flat[..., 0] = 196  # same colour as `red`, but no texture
+        red_flat[..., 0] = 196  # same colour as `red`, but no texture — used
+        # as the INPUT below, with the textured `red` as the TARGET, so the
+        # target's range has headroom above 196 and nothing clips.
 
         def _vsi_score(input_arr: np.ndarray, target_arr: np.ndarray, name: str) -> float:
             inp = tmp_path / f"{name}_input.png"
@@ -659,10 +677,18 @@ class TestColourReachesAChrominanceAwareMetric:
 
         self_score = _vsi_score(red, red.copy(), "self")
         colour_score = _vsi_score(red, green, "colour")
-        texture_only_score = _vsi_score(red, red_flat, "texture_only")
+        # Textured image as the TARGET, flat image as the INPUT: the target's
+        # range then has headroom above the flat value, so nothing clips and
+        # the score reflects what the texture actually does (see the class
+        # docstring for why the reverse pairing is an artefact, not a result).
+        texture_only_score = _vsi_score(red_flat, red, "texture_only")
 
         assert self_score > 0.999  # reference against itself: essentially perfect
-        assert texture_only_score > 0.999  # texture alone, same colour: negligible
+        # The texture is not negligible on its own (it measurably moves VSI
+        # below the self-pair baseline), but it moves it far less than the
+        # actual colour difference does — both bounds come from this same
+        # run's other ablation pairs, not from a hardcoded number.
+        assert colour_score < texture_only_score < self_score
         # The pass margin comes from this run's own self-pair baseline, not
         # from the colour-pair value observed while writing the test.
         assert colour_score < self_score - 0.05
