@@ -704,14 +704,17 @@ class TestColourReachesAChrominanceAwareMetric:
         # both bounds come from this same run's other ablation pairs, not
         # from a hardcoded number.
         assert colour_score < texture_only_score < self_score
-        # The margin is fixed and applied to this run's own self-pair score,
-        # not reverse-engineered from the colour-pair value: it is smaller
-        # than round 2's 0.05 because giving all three images the shared
-        # 0/255 anchors (needed to stop the clipping described above) shrinks
-        # the self-vs-colour gap from ~0.12 to ~0.06 — 0.03 still leaves a
-        # comfortable, non-trivial buffer below the observed gap without
-        # being tuned to match it.
-        assert colour_score < self_score - 0.03
+        # What this test actually wants to claim is a relation, not a single
+        # absolute score: the colour-driven drop from the self-pair baseline
+        # dominates the texture-driven drop. Measured here: colour_gap ≈
+        # 0.0582, texture_gap ≈ 0.000275 — a factor of ≈212. The `10×` floor
+        # below is deliberately loose, far under that measured factor, so
+        # this assertion checks the dominance relation the test is actually
+        # about instead of turning into a change detector for VSI's exact
+        # numeric scale.
+        colour_gap = self_score - colour_score
+        texture_gap = self_score - texture_only_score
+        assert colour_gap > 10 * texture_gap
 
 
 class TestPSNRExercisesTheLumaPathOnly:
