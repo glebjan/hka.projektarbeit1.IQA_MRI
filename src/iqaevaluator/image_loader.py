@@ -303,7 +303,10 @@ class ImageLoader:
         """(D, C, H, W) with C in {1, 3}. float32 in [0, 1] under every strategy
         except `Raw()` (dtype preserved, unscaled); exactly {0.0, 1.0} under
         `Mask()`. Colour files keep their three channels — what a metric does
-        with them is decided by `MetricSpec.channels` and by the metric itself."""
+        with them is decided by `MetricSpec.channels` and by the metric itself.
+        The returned tensor may share storage with this loader's cache (as do
+        `.rgb_tensor` and `.gray_tensor`, which are derived from it) — callers
+        must not mutate it in place."""
         if self._tensor is None:
             scaled = self.normalizer.apply(self.raw, source=self.path.name)
             self._tensor = (
@@ -329,7 +332,15 @@ class ImageLoader:
 
     @property
     def gray_tensor(self) -> torch.Tensor:
-        """(D, 1, H, W) — colour reduced to luma, greyscale as it is."""
+        """(D, 1, H, W) — colour reduced to luma, greyscale as it is.
+
+        The reduction happens on `.tensor`, i.e. after scaling, not on `.raw`
+        before it. Because the luma weights sum to one, this is equivalent to
+        reducing first and then scaling — the intensity range still comes
+        from the whole colour image, exactly as `.tensor` documents. One
+        exception: `scale()` clips to [0, 1] before this property runs, so a
+        channel that was clipped shifts the resulting luma slightly, same as
+        it would shift any other per-channel computation on `.tensor`."""
         tensor = self.tensor
         if tensor.shape[1] == 1:
             return tensor
