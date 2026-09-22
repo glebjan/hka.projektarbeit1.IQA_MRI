@@ -592,3 +592,44 @@ class TestDreamSimIsReachableButOptIn:
         import main
         assert main.DREAMSIM.name == "dreamsim"
         assert main.dreamsim_spec is not None
+
+
+class TestColourReachesTheMetric:
+    def test_equal_luminance_colour_difference_is_measured(self, tmp_path):
+        """Red vs green at matched luma: PSNR must see a difference.
+
+        Before colour support both images decoded to nearly the same grey and
+        the metric reported a perfect score — the bug this whole change fixes.
+        """
+        from PIL import Image
+        import numpy as np
+        from iqaevaluator.image_loader import load_pair
+        from iqaevaluator.iqa_evaluator import IQAEvaluator
+        from iqaevaluator.metrics import MetricRegistry, PSNR
+        from iqaevaluator.normalization import MinMax
+
+        # A perfectly flat block has zero spatial spread, and the loader's
+        # empty-slice heuristic (sparse_slices — see test_empty_slice_mask_flat_image
+        # in test_image_loader.py) treats a zero-spread slice as background and
+        # skips it before any metric runs. A few uint8 levels of texture keep
+        # the slice out of that guard without disturbing the matched-luma setup.
+        texture = np.random.default_rng(0).integers(0, 4, (96, 96), dtype="uint8")
+
+        red = np.zeros((96, 96, 3), dtype="uint8")
+        green = np.zeros((96, 96, 3), dtype="uint8")
+        # 0.299*196 ≈ 0.587*100 ≈ 59, so both have almost the same luma.
+        red[..., 0] = 196 + texture
+        green[..., 1] = 100 + texture
+
+        inp = tmp_path / "red.png"
+        tgt = tmp_path / "green.png"
+        Image.fromarray(red).save(inp)
+        Image.fromarray(green).save(tgt)
+
+        loaded_input, loaded_target = load_pair(inp, tgt, MinMax())
+        records = IQAEvaluator(
+            loaded_input, loaded_target, MetricRegistry(PSNR)
+        ).run_evaluation()
+        assert records[0].channels == 3
+        assert records[0].psnr is not None
+        assert records[0].psnr < 40.0  # a real difference, not a perfect score
