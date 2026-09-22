@@ -594,12 +594,93 @@ class TestDreamSimIsReachableButOptIn:
         assert main.dreamsim_spec is not None
 
 
-class TestColourReachesTheMetric:
-    def test_equal_luminance_colour_difference_is_measured(self, tmp_path):
-        """Red vs green at matched luma: PSNR must see a difference.
+class TestColourReachesAChrominanceAwareMetric:
+    def test_matched_luma_colour_difference_changes_vsi(self, tmp_path):
+        """A colour difference at matched luminance moves VSI's score.
 
-        Before colour support both images decoded to nearly the same grey and
-        the metric reported a perfect score — the bug this whole change fixes.
+        `VSI` is declared `channels="rgb"` in metrics.py (like fifteen of the
+        other seventeen built-ins; only `psnr`/`ssim` are `"gray"`, see
+        metrics.py:194-198) and pyiqa's VSI genuinely weighs chrominance, not
+        just luma. Red and green at matched luma decode to nearly the same
+        grey, so a metric that never receives colour — or discards it before
+        scoring, as this loader did before colour support — cannot tell them
+        apart. Proving VSI *can* tell them apart is proof colour reaches a
+        metric that uses it, not a range-coupling artefact of some other part
+        of the pipeline.
+
+        This is an ablation, not one absolute number, so it cannot pass for
+        the wrong reason:
+        - the reference against an exact copy of itself must score
+          essentially 1.0 (VSI is higher-is-better with a max of 1.0) —
+          establishing this run's own near-perfect baseline;
+        - red against green at matched luma must then score clearly below
+          that self-pair baseline, with the margin taken from the baseline
+          itself rather than hardcoded from whatever value happened to be
+          observed once.
+        """
+        from PIL import Image
+        import numpy as np
+        from iqaevaluator.image_loader import load_pair
+        from iqaevaluator.iqa_evaluator import IQAEvaluator
+        from iqaevaluator.metrics import MetricRegistry, VSI
+        from iqaevaluator.normalization import MinMax
+
+        # A perfectly flat block has zero spatial spread, and the loader's
+        # empty-slice heuristic (sparse_slices — see test_empty_slice_mask_flat_image
+        # in test_image_loader.py) treats a zero-spread slice as background and
+        # skips it before any metric runs. A few uint8 levels of texture keep
+        # the slice out of that guard without disturbing the matched-luma setup.
+        # The texture's own effect on the score is negligible, confirmed below
+        # by the texture-only ablation (same colour, texture vs. no texture:
+        # VSI == 1.0 exactly) — so the drop measured for the colour pair is
+        # attributable to colour, not to this noise.
+        texture = np.random.default_rng(0).integers(0, 4, (96, 96), dtype="uint8")
+
+        red = np.zeros((96, 96, 3), dtype="uint8")
+        green = np.zeros((96, 96, 3), dtype="uint8")
+        # 0.299*196 ≈ 0.587*100 ≈ 59, so both have almost the same luma.
+        red[..., 0] = 196 + texture
+        green[..., 1] = 100 + texture
+        red_flat = np.zeros((96, 96, 3), dtype="uint8")
+        red_flat[..., 0] = 196  # same colour as `red`, but no texture
+
+        def _vsi_score(input_arr: np.ndarray, target_arr: np.ndarray, name: str) -> float:
+            inp = tmp_path / f"{name}_input.png"
+            tgt = tmp_path / f"{name}_target.png"
+            Image.fromarray(input_arr).save(inp)
+            Image.fromarray(target_arr).save(tgt)
+            loaded_input, loaded_target = load_pair(inp, tgt, MinMax())
+            record = IQAEvaluator(
+                loaded_input, loaded_target, MetricRegistry(VSI)
+            ).run_evaluation()[0]
+            assert record.channels == 3
+            assert not record.is_empty
+            return record.vsi
+
+        self_score = _vsi_score(red, red.copy(), "self")
+        colour_score = _vsi_score(red, green, "colour")
+        texture_only_score = _vsi_score(red, red_flat, "texture_only")
+
+        assert self_score > 0.999  # reference against itself: essentially perfect
+        assert texture_only_score > 0.999  # texture alone, same colour: negligible
+        # The pass margin comes from this run's own self-pair baseline, not
+        # from the colour-pair value observed while writing the test.
+        assert colour_score < self_score - 0.05
+
+
+class TestPSNRExercisesTheLumaPathOnly:
+    def test_matched_luma_colour_difference_via_psnr(self, tmp_path):
+        """PSNR compares on luma only — this is not a colour test.
+
+        `PSNR` is declared `channels="gray"` in metrics.py (metrics.py:194-195),
+        so it only ever receives `ImageLoader.gray_tensor`; colour never
+        reaches it, by design. What this exercises instead is the luma path
+        plus `load_pair`'s range-coupling: the input is rescaled onto the
+        target's own intensity range, and red/green at matched luma have
+        different raw ranges (196 vs. 100), so even on luma alone the pair
+        does not collapse to a trivial "identical images" pass-through. See
+        `TestColourReachesAChrominanceAwareMetric` above for the test that
+        actually proves colour reaches a metric.
         """
         from PIL import Image
         import numpy as np
@@ -608,11 +689,10 @@ class TestColourReachesTheMetric:
         from iqaevaluator.metrics import MetricRegistry, PSNR
         from iqaevaluator.normalization import MinMax
 
-        # A perfectly flat block has zero spatial spread, and the loader's
-        # empty-slice heuristic (sparse_slices — see test_empty_slice_mask_flat_image
-        # in test_image_loader.py) treats a zero-spread slice as background and
-        # skips it before any metric runs. A few uint8 levels of texture keep
-        # the slice out of that guard without disturbing the matched-luma setup.
+        # See the comment in TestColourReachesAChrominanceAwareMetric above:
+        # a perfectly flat block is treated as an empty slice and skipped
+        # before any metric runs, so a few uint8 levels of texture are needed
+        # here too.
         texture = np.random.default_rng(0).integers(0, 4, (96, 96), dtype="uint8")
 
         red = np.zeros((96, 96, 3), dtype="uint8")
@@ -632,4 +712,4 @@ class TestColourReachesTheMetric:
         ).run_evaluation()
         assert records[0].channels == 3
         assert records[0].psnr is not None
-        assert records[0].psnr < 40.0  # a real difference, not a perfect score
+        assert records[0].psnr < 40.0  # not a trivial perfect score
