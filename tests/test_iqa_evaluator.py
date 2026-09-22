@@ -30,6 +30,7 @@ def _make_loader(n_slices: int = 3, h: int = 64, w: int = 64) -> ImageLoader:
     loader.suffix = ".png"
     loader.normalizer = MinMax()
     loader._loaded = LoadedImage(np.random.default_rng(0).random((n_slices, h, w)).astype("float32"))
+    loader._raw = None
     loader._tensor = None
     loader._intensity_range = None
     loader._intensity_range_known = False
@@ -239,6 +240,7 @@ class TestRunEvaluation:
         loader.suffix = ".nii"
         loader.normalizer = MinMax()
         loader._loaded = _load_nifti(p)
+        loader._raw = None
         loader._tensor = None
         loader._intensity_range = None
         loader._intensity_range_known = False

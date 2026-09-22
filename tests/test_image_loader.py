@@ -43,13 +43,13 @@ class TestLoadPil:
         assert float(t.min()) >= 0.0
         assert float(t.max()) <= 1.0 + 1e-6
 
-    def test_rgb_png_converted_to_grayscale(self, tmp_path):
+    def test_rgb_png_keeps_three_channels(self, tmp_path):
         arr = np.random.default_rng(1).integers(0, 256, (32, 32, 3), dtype="uint8")
         p = tmp_path / "rgb.png"
         Image.fromarray(arr, mode="RGB").save(p)
         t = ImageLoader(p).tensor
-        # Should be (1, 1, H, W) — grayscale
-        assert t.shape == (1, 1, 32, 32)
+        # Colour PNGs now carry their channel axis through — see TestColourDecoding.
+        assert t.shape == (1, 3, 32, 32)
 
 
 # ---------------------------------------------------------------------------
@@ -565,3 +565,74 @@ class TestLoadPair:
         nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p2))
         inp, _ = load_pair(p1, p2, Raw())
         assert inp.normalizer == Raw()
+
+
+class TestColourDecoding:
+    def _rgb_array(self, h: int = 32, w: int = 32) -> np.ndarray:
+        rng = np.random.default_rng(7)
+        return rng.integers(0, 256, (h, w, 3), dtype="uint8")
+
+    def test_colour_png_keeps_three_channels(self, tmp_path):
+        p = tmp_path / "colour.png"
+        Image.fromarray(self._rgb_array()).save(p)
+        loader = ImageLoader(p)
+        assert loader.channels == 3
+        assert loader.tensor.shape == (1, 3, 32, 32)
+
+    def test_grayscale_png_stays_single_channel(self, tmp_path):
+        arr = np.random.default_rng(8).integers(0, 256, (32, 32), dtype="uint8")
+        p = tmp_path / "gray.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p)
+        assert loader.channels == 1
+        assert loader.tensor.shape == (1, 1, 32, 32)
+
+    def test_rgba_and_palette_become_three_channels(self, tmp_path):
+        rgba = np.concatenate(
+            [self._rgb_array(), np.full((32, 32, 1), 255, dtype="uint8")], axis=-1
+        )
+        p_rgba = tmp_path / "rgba.png"
+        Image.fromarray(rgba, mode="RGBA").save(p_rgba)
+        p_pal = tmp_path / "palette.png"
+        Image.fromarray(self._rgb_array()).convert("P").save(p_pal)
+        assert ImageLoader(p_rgba).channels == 3
+        assert ImageLoader(p_pal).channels == 3
+
+    def test_to_luma_matches_pil_grayscale(self, tmp_path):
+        arr = self._rgb_array()
+        p = tmp_path / "colour.png"
+        Image.fromarray(arr).save(p)
+        from iqaevaluator.image_loader import to_luma
+
+        ours = to_luma(np.asarray(Image.open(p).convert("RGB"))[np.newaxis])
+        pil = np.asarray(Image.open(p).convert("L"), dtype=np.float32)[np.newaxis]
+        # PIL truncates its fixed-point result, so allow one grey level.
+        assert np.abs(ours - pil).max() <= 1.0
+
+    def test_to_luma_passes_single_channel_through(self):
+        from iqaevaluator.image_loader import to_luma
+
+        arr = np.arange(2 * 3 * 4, dtype="uint8").reshape(2, 3, 4)
+        assert to_luma(arr) is arr
+
+    def test_colour_is_scaled_on_one_shared_range(self, tmp_path):
+        # A blue-tinted image: the blue channel never reaches the image maximum.
+        arr = np.zeros((16, 16, 3), dtype="uint8")
+        arr[..., 0] = 200   # red
+        arr[..., 2] = 100   # blue
+        p = tmp_path / "tint.png"
+        Image.fromarray(arr).save(p)
+        tensor = ImageLoader(p, MinMax()).tensor
+        # One range over the whole image: red hits 1.0, blue stays below it.
+        assert float(tensor[0, 0].max()) == pytest.approx(1.0)
+        assert float(tensor[0, 2].max()) == pytest.approx(0.5, abs=0.01)
+
+    def test_multichannel_is_rejected_for_medical_formats(self, tmp_path, monkeypatch):
+        import iqaevaluator.image_loader as il
+
+        p = tmp_path / "vol.nrrd"
+        p.write_bytes(b"")  # never decoded — the decoder is patched below
+        fake = il.LoadedImage(np.zeros((2, 4, 4, 3), dtype="float32"))
+        monkeypatch.setitem(il._LOADERS, ".nrrd", lambda _path: fake)
+        with pytest.raises(ValueError, match="single channel"):
+            _ = ImageLoader(p).raw

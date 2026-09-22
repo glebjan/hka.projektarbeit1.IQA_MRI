@@ -27,10 +27,13 @@ class LoadedImage:
     """A decoded image plus the geometry the decoder knew about.
 
     Attributes:
-        raw:           (D, H, W) array in the dtype the decoder produced —
-                       uint8 for PNG/JPEG, float32 for DICOM (slope/intercept
-                       applied), the file's own dtype for NIfTI and
-                       SimpleITK formats, so an integer label map stays integer.
+        raw:           (D, H, W), or (D, H, W, 3) for a colour PNG/JPEG. The
+                       dtype is the decoder's — uint8 for PNG/JPEG, float32
+                       for DICOM (slope/intercept applied), the file's own
+                       dtype for NIfTI and SimpleITK formats, so an integer
+                       label map stays integer. Only the PIL decoder ever
+                       produces a channel axis; the medical formats stay
+                       single-channel.
         spacing:       physical voxel size in millimetres, ordered to match the
                        array's axes: (d_depth, d_height, d_width) for (D, H, W).
                        The names are array axes, not anatomical ones — for a
@@ -52,9 +55,34 @@ class LoadedImage:
 # Format-specific loaders
 # ---------------------------------------------------------------------------
 
+# PIL's own ITU-R 601-2 weights, so the same picture stored as RGB and as
+# greyscale yields the same numbers.
+_LUMA_WEIGHTS = (0.299, 0.587, 0.114)
+
+# Modes PIL already stores as one channel. Everything else is treated as
+# colour and normalized to RGB, so only two cases can leave this decoder.
+_SINGLE_CHANNEL_MODES = frozenset({"1", "L", "I", "I;16", "I;16B", "F"})
+
+_PIL_SUFFIXES = frozenset({".png", ".jpg", ".jpeg"})
+
+
 def _load_pil(path: Path) -> LoadedImage:
-    grayscale = np.asarray(Image.open(path).convert("L"))
-    return LoadedImage(grayscale[np.newaxis])
+    image = Image.open(path)
+    if image.mode in _SINGLE_CHANNEL_MODES:
+        return LoadedImage(np.asarray(image.convert("L"))[np.newaxis])
+    return LoadedImage(np.asarray(image.convert("RGB"))[np.newaxis])
+
+
+def to_luma(raw: np.ndarray) -> np.ndarray:
+    """(D, H, W, 3) -> (D, H, W) float32; a (D, H, W) array passes through.
+
+    The weights are PIL's, so a colour file and the same picture stored as
+    greyscale produce the same intensities (up to PIL's truncation).
+    """
+    if raw.ndim == 3:
+        return raw
+    weights = np.asarray(_LUMA_WEIGHTS, dtype=np.float32)
+    return (raw.astype(np.float32) * weights).sum(axis=-1)
 
 
 def _dicom_array_to_depth_first(pixel_array: np.ndarray, photometric: str) -> np.ndarray:
@@ -226,6 +254,7 @@ class ImageLoader:
             raise ValueError(f"Unsupported format: {path}")
         self.normalizer = normalizer
         self._loaded: Optional[LoadedImage] = None
+        self._raw: Optional[np.ndarray] = None
         self._tensor: Optional[torch.Tensor] = None
         self._intensity_range: Optional[IntensityRange] = None
         self._intensity_range_known = False
@@ -238,8 +267,23 @@ class ImageLoader:
 
     @property
     def raw(self) -> np.ndarray:
-        """The decoded (D, H, W) array, dtype as the file stored it."""
-        return self._image.raw
+        """The decoded array: (D, H, W), or (D, H, W, 3) for a colour file."""
+        if self._raw is None:
+            raw = self._image.raw
+            if raw.ndim == 4 and self.suffix not in _PIL_SUFFIXES:
+                raise ValueError(
+                    f"[{self.path.name}] this format must decode to a single channel, "
+                    f"but the decoder returned {raw.shape[-1]} of them. Colour is "
+                    "supported for PNG and JPEG only; convert the file or extract "
+                    "the component you want to score."
+                )
+            self._raw = raw
+        return self._raw
+
+    @property
+    def channels(self) -> int:
+        """1 for a greyscale image, 3 for a colour one."""
+        return 1 if self.raw.ndim == 3 else 3
 
     @property
     def raw_range(self) -> IntensityRange:
@@ -256,10 +300,15 @@ class ImageLoader:
 
     @property
     def tensor(self) -> torch.Tensor:
-        """(D, 1, H, W). float32 in [0, 1] under every strategy except `Raw()`
-        (dtype preserved, unscaled); exactly {0.0, 1.0} under `Mask()`."""
+        """(D, C, H, W) with C in {1, 3}. float32 in [0, 1] under every strategy
+        except `Raw()` (dtype preserved, unscaled); exactly {0.0, 1.0} under
+        `Mask()`. Colour files keep their three channels — what a metric does
+        with them is decided by `MetricSpec.channels` and by the metric itself."""
         if self._tensor is None:
-            self._tensor = self.normalizer.apply(self.raw, source=self.path.name).unsqueeze(1)
+            scaled = self.normalizer.apply(self.raw, source=self.path.name)
+            self._tensor = (
+                scaled.unsqueeze(1) if scaled.ndim == 3 else scaled.permute(0, 3, 1, 2)
+            )
         return self._tensor
 
     @property
