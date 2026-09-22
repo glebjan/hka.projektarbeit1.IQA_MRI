@@ -7,4 +7,4 @@ RESNET50 = Path("models/RadImageNet_pytorch/ResNet50.pt")
 # RESNET50, these weights are fetched automatically and need not be tracked.
 DREAMSIM_CACHE = Path("models/dreamsim")
 
-REPORT = Path("report") / "IXI661_report.csv"
+REPORT = Path("report") / "report.csv"
