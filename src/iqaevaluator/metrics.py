@@ -61,8 +61,8 @@ class PyIQAMetric:
         if self._impl is None:
             self._impl = pyiqa.create_metric(self._name, as_loss=False, device=DEVICE, **self._kwargs)
         scores = self._impl(input, target) if target is not None else self._impl(input)
-        scores = scores.squeeze(-1) if scores.dim() == 2 else scores
-        return [float(s.item()) for s in scores]
+        # (N, 1), (N,) or — niqe on a single image — a 0-d scalar: one score per image.
+        return [float(s) for s in scores.reshape(-1)]
 
 
 class MetricRegistry:
