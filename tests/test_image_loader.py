@@ -697,3 +697,55 @@ class TestColourMasks:
         mask = loader.empty_slice_mask
         assert mask.shape == (1,)
         assert not bool(mask[0])
+
+
+class TestPairChannelHarmonisation:
+    def _pair(self, tmp_path):
+        rng = np.random.default_rng(15)
+        colour = rng.integers(0, 256, (32, 32, 3), dtype="uint8")
+        gray = rng.integers(0, 256, (32, 32), dtype="uint8")
+        inp = tmp_path / "inp.png"
+        tgt = tmp_path / "tgt.png"
+        Image.fromarray(colour).save(inp)
+        Image.fromarray(gray).save(tgt)
+        return inp, tgt
+
+    def test_mixed_pair_is_compared_on_luma(self, tmp_path, capsys):
+        inp, tgt = self._pair(tmp_path)
+        loaded_input, loaded_target = load_pair(inp, tgt, MinMax())
+        assert loaded_input.channels == 1
+        assert loaded_target.channels == 1
+        assert loaded_input.tensor.shape == loaded_target.tensor.shape
+        printed = capsys.readouterr().out
+        assert "inp.png" in printed and "tgt.png" in printed
+
+    def test_matching_colour_pair_keeps_colour(self, tmp_path):
+        rng = np.random.default_rng(16)
+        inp = tmp_path / "a.png"
+        tgt = tmp_path / "b.png"
+        Image.fromarray(rng.integers(0, 256, (32, 32, 3), dtype="uint8")).save(inp)
+        Image.fromarray(rng.integers(0, 256, (32, 32, 3), dtype="uint8")).save(tgt)
+        loaded_input, loaded_target = load_pair(inp, tgt, MinMax())
+        assert loaded_input.channels == 3 and loaded_target.channels == 3
+
+    def test_mixed_pair_scales_on_the_targets_luma_range(self, tmp_path):
+        # Target is a greyscale ramp from 10 to 200; input is colour.
+        gray = np.linspace(10, 200, 32 * 32, dtype="uint8").reshape(32, 32)
+        colour = np.zeros((32, 32, 3), dtype="uint8")
+        colour[..., 0] = 255
+        inp = tmp_path / "inp.png"
+        tgt = tmp_path / "tgt.png"
+        Image.fromarray(colour).save(inp)
+        Image.fromarray(gray).save(tgt)
+        loaded_input, loaded_target = load_pair(inp, tgt, MinMax())
+        assert loaded_target.intensity_range == IntensityRange(10.0, 200.0)
+        assert loaded_input.intensity_range == IntensityRange(10.0, 200.0)
+
+    def test_force_gray_after_the_tensor_exists_is_refused(self, tmp_path):
+        arr = np.random.default_rng(17).integers(0, 256, (16, 16, 3), dtype="uint8")
+        p = tmp_path / "c.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p)
+        _ = loader.tensor
+        with pytest.raises(RuntimeError, match="before"):
+            loader.force_gray()

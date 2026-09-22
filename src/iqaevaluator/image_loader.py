@@ -280,6 +280,7 @@ class ImageLoader:
         self._tensor: Optional[torch.Tensor] = None
         self._intensity_range: Optional[IntensityRange] = None
         self._intensity_range_known = False
+        self._force_gray = False
 
     @property
     def _image(self) -> LoadedImage:
@@ -299,6 +300,8 @@ class ImageLoader:
                     "supported for PNG and JPEG only; convert the file or extract "
                     "the component you want to score."
                 )
+            if raw.ndim == 4 and self._force_gray:
+                raw = to_luma(raw)
             if isinstance(self.normalizer, (Mask, Raw)):
                 raw = collapse_identical_channels(raw, source=self.path.name)
             self._raw = raw
@@ -389,6 +392,21 @@ class ImageLoader:
         print(f"[{self.path.name}] tensor size: {tuple(shape)}")
         return shape
 
+    def force_gray(self) -> None:
+        """Compare this image on luma, whatever the file holds.
+
+        Used by `load_pair` when only one side of a pair carries colour. Must
+        run before anything is derived from the raw data, because the range
+        and the tensor would otherwise be built from the colour version.
+        """
+        if self._tensor is not None or self._intensity_range_known:
+            raise RuntimeError(
+                "force_gray() must be called before the tensor or the intensity "
+                "range is built"
+            )
+        self._force_gray = True
+        self._raw = None
+
 
 def load_pair(
     input_path: Path,
@@ -408,9 +426,27 @@ def load_pair(
     loaded with `normalizer` itself, independently — a 0/1 prediction against
     a 0/255 reference binarizes to the same tensor.
 
+    When only one side carries colour, both are compared on luma: the usual
+    cause is a format difference (the same greys stored as RGB), not a colour
+    error, and replicating the greyscale side instead would score JPEG's
+    channel drift as a colour deviation. The switch happens before any
+    scaling, so the target's range is read from the same numbers that are
+    compared later.
+
     Returns `(input, target)`.
     """
+    input_image = ImageLoader(input_path, normalizer)
     target = ImageLoader(target_path, normalizer)
+
+    if input_image.channels != target.channels:
+        print(
+            f"[{input_path.name} vs {target_path.name}] one image is colour and the "
+            "other greyscale — both are compared on luma (one channel)."
+        )
+        input_image.force_gray()
+        target.force_gray()
+
     rng = target.intensity_range
-    input_normalizer = normalizer if rng is None else FixedRange(rng, name=normalizer.name)
-    return ImageLoader(input_path, input_normalizer), target
+    if rng is not None:
+        input_image.normalizer = FixedRange(rng, name=normalizer.name)
+    return input_image, target

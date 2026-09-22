@@ -35,9 +35,20 @@ class IQAEvaluator:
         self.source_model = source_model
 
         if self.target is not None and self.input.tensor.shape != self.target.tensor.shape:
+            differing = ", ".join(
+                f"{axis} ({a} vs {b})"
+                for axis, a, b in zip(
+                    ("depth", "channels", "height", "width"),
+                    self.input.tensor.shape,
+                    self.target.tensor.shape,
+                )
+                if a != b
+            )
             raise ValueError(
                 f"shape mismatch: input {tuple(self.input.tensor.shape)} "
-                f"vs target {tuple(self.target.tensor.shape)}"
+                f"vs target {tuple(self.target.tensor.shape)} — differing: {differing}. "
+                "Use load_pair() to build the pair; it puts a mixed colour/greyscale "
+                "pair on one channel."
             )
 
     # ------------------------------------------------------------------
