@@ -99,6 +99,7 @@ class IQAEvaluator:
             "scale_hi":      None if rng is None else rng.hi,
             "input_min":     raw.lo,
             "input_max":     raw.hi,
+            "channels":      self.input.channels,
         }
 
     # ------------------------------------------------------------------

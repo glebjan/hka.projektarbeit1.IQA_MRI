@@ -471,3 +471,44 @@ class TestChannelSelection:
             ImageLoader(self._colour_png(tmp_path)), None, MetricRegistry(spec)
         ).run_evaluation()
         assert seen["shape"][1] == 3
+
+
+class TestChannelsColumn:
+    def _png(self, tmp_path, name, arr):
+        p = tmp_path / name
+        Image.fromarray(arr).save(p)
+        return p
+
+    def test_colour_input_is_recorded_as_three(self, tmp_path):
+        from iqaevaluator.image_loader import ImageLoader
+        from iqaevaluator.iqa_evaluator import IQAEvaluator
+        from iqaevaluator.metrics import MetricRegistry
+
+        arr = np.random.default_rng(18).integers(0, 256, (96, 96, 3), dtype="uint8")
+        loader = ImageLoader(self._png(tmp_path, "c.png", arr))
+        records = IQAEvaluator(loader, None, MetricRegistry()).run_evaluation()
+        assert records[0].channels == 3
+        assert records[0].to_dict()["channels"] == 3
+
+    def test_greyscale_input_is_recorded_as_one(self, tmp_path):
+        from iqaevaluator.image_loader import ImageLoader
+        from iqaevaluator.iqa_evaluator import IQAEvaluator
+        from iqaevaluator.metrics import MetricRegistry
+
+        arr = np.random.default_rng(19).integers(0, 256, (96, 96), dtype="uint8")
+        loader = ImageLoader(self._png(tmp_path, "g.png", arr))
+        records = IQAEvaluator(loader, None, MetricRegistry()).run_evaluation()
+        assert records[0].channels == 1
+
+    def test_mixed_pair_is_recorded_as_one(self, tmp_path):
+        from iqaevaluator.image_loader import load_pair
+        from iqaevaluator.iqa_evaluator import IQAEvaluator
+        from iqaevaluator.metrics import MetricRegistry
+        from iqaevaluator.normalization import MinMax
+
+        rng = np.random.default_rng(20)
+        inp = self._png(tmp_path, "i.png", rng.integers(0, 256, (96, 96, 3), dtype="uint8"))
+        tgt = self._png(tmp_path, "t.png", rng.integers(0, 256, (96, 96), dtype="uint8"))
+        loaded_input, loaded_target = load_pair(inp, tgt, MinMax())
+        records = IQAEvaluator(loaded_input, loaded_target, MetricRegistry()).run_evaluation()
+        assert records[0].channels == 1
