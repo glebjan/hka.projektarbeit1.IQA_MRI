@@ -62,8 +62,10 @@ class Metric(Protocol):
     """Adapter boundary: anything callable this way can be registered as a metric.
 
     input/target: batch tensor (N, C, H, W), float32 in [0,1] — the same
-    format ImageLoader.tensor / .rgb_tensor produce. target is None for
-    no-reference metrics. Returns one score per slice in the batch.
+    format ImageLoader.gray_tensor (C=1) / .rgb_tensor (C=3) produce, matching
+    what the metric's MetricSpec.channels declares. `ImageLoader.tensor` itself
+    is (D, C, H, W) with C in {1, 3}, one axis per decoded channel. target is
+    None for no-reference metrics. Returns one score per slice in the batch.
 
     "[0, 1]" is produced by the run's `normalization.Normalizer` (default
     `MinMax`, per volume; full-reference pairs share the target's range —
@@ -85,7 +87,7 @@ class MetricSpec:
         name:      metric name (also the ImageEvaluatorRecord field name for builtins).
         direction: whether a higher or lower score indicates better quality.
         reference: True for full-reference metrics (need a target image).
-        channels:  "gray" -> use ImageLoader.tensor; "rgb" -> use ImageLoader.rgb_tensor.
+        channels:  "gray" -> use ImageLoader.gray_tensor; "rgb" -> use ImageLoader.rgb_tensor.
         slice_mode:  ModeSupport (builds the per-slice Metric, lazily, cached by
                      MetricRegistry) or ModeUnsupported (with a reason) for
                      per-slice scoring.

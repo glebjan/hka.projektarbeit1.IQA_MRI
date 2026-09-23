@@ -43,13 +43,23 @@ class TestLoadPil:
         assert float(t.min()) >= 0.0
         assert float(t.max()) <= 1.0 + 1e-6
 
-    def test_rgb_png_converted_to_grayscale(self, tmp_path):
+    def test_rgb_png_keeps_three_channels(self, tmp_path):
         arr = np.random.default_rng(1).integers(0, 256, (32, 32, 3), dtype="uint8")
         p = tmp_path / "rgb.png"
         Image.fromarray(arr, mode="RGB").save(p)
         t = ImageLoader(p).tensor
-        # Should be (1, 1, H, W) — grayscale
-        assert t.shape == (1, 1, 32, 32)
+        # Colour PNGs now carry their channel axis through — see TestColourDecoding.
+        assert t.shape == (1, 3, 32, 32)
+
+    def test_greyscale_with_alpha_is_single_channel(self, tmp_path):
+        arr = np.random.default_rng(2).integers(0, 256, (32, 32), dtype="uint8")
+        la_path = tmp_path / "la.png"
+        l_path = tmp_path / "l.png"
+        Image.fromarray(arr).convert("LA").save(la_path)
+        Image.fromarray(arr).convert("L").save(l_path)
+        la_loader = ImageLoader(la_path)
+        assert la_loader.channels == 1
+        assert torch.equal(la_loader.tensor, ImageLoader(l_path).tensor)
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +211,28 @@ class TestLoadSitk:
         sitk.WriteImage(itk_img, str(p))
         t = ImageLoader(p).tensor
         assert t.shape == (1, 1, 64, 64)
+
+    def test_2d_vector_mha_is_rejected(self, tmp_path):
+        # A real 2-D colour image, e.g. (32, 40, 3), decodes via SimpleITK as
+        # a vector image whose components must not be silently read as 32
+        # slices 3 px wide.
+        arr = np.random.default_rng(2).random((32, 40, 3)).astype(np.float32)
+        itk_img = sitk.GetImageFromArray(arr, isVector=True)
+        p = tmp_path / "vector_slice.mha"
+        sitk.WriteImage(itk_img, str(p))
+        with pytest.raises(ValueError, match="components"):
+            _ = ImageLoader(p).raw
+
+    def test_3d_vector_nrrd_is_rejected_with_the_components_message(self, tmp_path):
+        # A 3-D vector image must raise the new "components" message, not the
+        # older "Unsupported SimpleITK array shape" one.
+        arr = np.random.default_rng(3).random((10, 64, 64, 3)).astype(np.float32)
+        itk_img = sitk.GetImageFromArray(arr, isVector=True)
+        p = tmp_path / "vector_vol.nrrd"
+        sitk.WriteImage(itk_img, str(p))
+        with pytest.raises(ValueError, match="components") as excinfo:
+            _ = ImageLoader(p).raw
+        assert "Unsupported SimpleITK array shape" not in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -565,3 +597,223 @@ class TestLoadPair:
         nib.save(nib.Nifti1Image(labels, np.eye(4)), str(p2))
         inp, _ = load_pair(p1, p2, Raw())
         assert inp.normalizer == Raw()
+
+
+class TestColourDecoding:
+    def _rgb_array(self, h: int = 32, w: int = 32) -> np.ndarray:
+        rng = np.random.default_rng(7)
+        return rng.integers(0, 256, (h, w, 3), dtype="uint8")
+
+    def test_colour_png_keeps_three_channels(self, tmp_path):
+        p = tmp_path / "colour.png"
+        Image.fromarray(self._rgb_array()).save(p)
+        loader = ImageLoader(p)
+        assert loader.channels == 3
+        assert loader.tensor.shape == (1, 3, 32, 32)
+
+    def test_grayscale_png_stays_single_channel(self, tmp_path):
+        arr = np.random.default_rng(8).integers(0, 256, (32, 32), dtype="uint8")
+        p = tmp_path / "gray.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p)
+        assert loader.channels == 1
+        assert loader.tensor.shape == (1, 1, 32, 32)
+
+    def test_rgba_and_palette_become_three_channels(self, tmp_path):
+        rgba = np.concatenate(
+            [self._rgb_array(), np.full((32, 32, 1), 255, dtype="uint8")], axis=-1
+        )
+        p_rgba = tmp_path / "rgba.png"
+        Image.fromarray(rgba, mode="RGBA").save(p_rgba)
+        p_pal = tmp_path / "palette.png"
+        Image.fromarray(self._rgb_array()).convert("P").save(p_pal)
+        assert ImageLoader(p_rgba).channels == 3
+        assert ImageLoader(p_pal).channels == 3
+
+    def test_to_luma_matches_pil_grayscale(self, tmp_path):
+        arr = self._rgb_array()
+        p = tmp_path / "colour.png"
+        Image.fromarray(arr).save(p)
+        from iqaevaluator.image_loader import to_luma
+
+        ours = to_luma(np.asarray(Image.open(p).convert("RGB"))[np.newaxis])
+        pil = np.asarray(Image.open(p).convert("L"), dtype=np.float32)[np.newaxis]
+        # PIL truncates its fixed-point result, so allow one grey level.
+        assert np.abs(ours - pil).max() <= 1.0
+
+    def test_to_luma_passes_single_channel_through(self):
+        from iqaevaluator.image_loader import to_luma
+
+        arr = np.arange(2 * 3 * 4, dtype="uint8").reshape(2, 3, 4)
+        assert to_luma(arr) is arr
+
+    def test_colour_is_scaled_on_one_shared_range(self, tmp_path):
+        # A blue-tinted image: the blue channel never reaches the image maximum.
+        arr = np.zeros((16, 16, 3), dtype="uint8")
+        arr[..., 0] = 200   # red
+        arr[..., 2] = 100   # blue
+        p = tmp_path / "tint.png"
+        Image.fromarray(arr).save(p)
+        tensor = ImageLoader(p, MinMax()).tensor
+        # One range over the whole image: red hits 1.0, blue stays below it.
+        assert float(tensor[0, 0].max()) == pytest.approx(1.0)
+        assert float(tensor[0, 2].max()) == pytest.approx(0.5, abs=0.01)
+
+    def test_multichannel_is_rejected_for_medical_formats(self, tmp_path, monkeypatch):
+        import iqaevaluator.image_loader as il
+
+        p = tmp_path / "vol.nrrd"
+        p.write_bytes(b"")  # never decoded — the decoder is patched below
+        fake = il.LoadedImage(np.zeros((2, 4, 4, 3), dtype="float32"))
+        monkeypatch.setitem(il._LOADERS, ".nrrd", lambda _path: fake)
+        with pytest.raises(ValueError, match="single channel"):
+            _ = ImageLoader(p).raw
+
+
+class TestChannelRequests:
+    def test_colour_image_serves_both_shapes(self, tmp_path):
+        arr = np.random.default_rng(11).integers(0, 256, (16, 16, 3), dtype="uint8")
+        p = tmp_path / "colour.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p)
+        assert loader.rgb_tensor.shape == (1, 3, 16, 16)
+        assert loader.gray_tensor.shape == (1, 1, 16, 16)
+        # gray_tensor really is a weighted mix, not just the first channel.
+        assert not torch.allclose(loader.gray_tensor[:, 0], loader.tensor[:, 0])
+
+    def test_grayscale_image_serves_both_shapes(self, tmp_path):
+        arr = np.random.default_rng(12).integers(0, 256, (16, 16), dtype="uint8")
+        p = tmp_path / "gray.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p)
+        assert loader.rgb_tensor.shape == (1, 3, 16, 16)
+        assert loader.gray_tensor.shape == (1, 1, 16, 16)
+        # Replication, so all three channels are identical.
+        assert torch.equal(loader.rgb_tensor[:, 0], loader.rgb_tensor[:, 2])
+        assert torch.equal(loader.gray_tensor, loader.tensor)
+
+
+class TestColourMasks:
+    def _save(self, tmp_path, arr, name="mask.png"):
+        p = tmp_path / name
+        Image.fromarray(arr).save(p)
+        return p
+
+    def test_grey_rgb_mask_is_accepted(self, tmp_path):
+        flat = np.zeros((16, 16), dtype="uint8")
+        flat[4:8, 4:8] = 255
+        rgb = np.stack([flat] * 3, axis=-1)
+        loader = ImageLoader(self._save(tmp_path, rgb), Mask())
+        assert loader.channels == 1
+        assert loader.tensor.shape == (1, 1, 16, 16)
+        assert set(loader.tensor.unique().tolist()) <= {0.0, 1.0}
+
+    def test_real_colour_mask_is_rejected(self, tmp_path):
+        arr = np.zeros((16, 16, 3), dtype="uint8")
+        arr[4:8, 4:8, 0] = 255   # red label
+        arr[9:12, 9:12, 1] = 255  # green label
+        loader = ImageLoader(self._save(tmp_path, arr, "labels.png"), Mask())
+        with pytest.raises(ValueError, match="colour"):
+            _ = loader.tensor
+
+    def test_raw_strategy_rejects_colour_too(self, tmp_path):
+        arr = np.zeros((16, 16, 3), dtype="uint8")
+        arr[..., 1] = 7
+        loader = ImageLoader(self._save(tmp_path, arr, "instances.png"), Raw())
+        with pytest.raises(ValueError, match="colour"):
+            _ = loader.tensor
+
+    def test_empty_slice_detection_uses_luma(self, tmp_path):
+        arr = np.random.default_rng(14).integers(0, 256, (32, 32, 3), dtype="uint8")
+        loader = ImageLoader(self._save(tmp_path, arr, "busy.png"))
+        mask = loader.empty_slice_mask
+        assert mask.shape == (1,)
+        assert not bool(mask[0])
+
+
+class TestPairChannelHarmonisation:
+    def _pair(self, tmp_path):
+        rng = np.random.default_rng(15)
+        colour = rng.integers(0, 256, (32, 32, 3), dtype="uint8")
+        gray = rng.integers(0, 256, (32, 32), dtype="uint8")
+        inp = tmp_path / "inp.png"
+        tgt = tmp_path / "tgt.png"
+        Image.fromarray(colour).save(inp)
+        Image.fromarray(gray).save(tgt)
+        return inp, tgt
+
+    def test_mixed_pair_is_compared_on_luma(self, tmp_path, capsys):
+        inp, tgt = self._pair(tmp_path)
+        loaded_input, loaded_target = load_pair(inp, tgt, MinMax())
+        assert loaded_input.channels == 1
+        assert loaded_target.channels == 1
+        assert loaded_input.tensor.shape == loaded_target.tensor.shape
+        printed = capsys.readouterr().out
+        assert "inp.png" in printed and "tgt.png" in printed
+
+    def test_matching_colour_pair_keeps_colour(self, tmp_path):
+        rng = np.random.default_rng(16)
+        inp = tmp_path / "a.png"
+        tgt = tmp_path / "b.png"
+        Image.fromarray(rng.integers(0, 256, (32, 32, 3), dtype="uint8")).save(inp)
+        Image.fromarray(rng.integers(0, 256, (32, 32, 3), dtype="uint8")).save(tgt)
+        loaded_input, loaded_target = load_pair(inp, tgt, MinMax())
+        assert loaded_input.channels == 3 and loaded_target.channels == 3
+
+    def test_mixed_pair_scales_on_the_targets_luma_range(self, tmp_path):
+        # Target is a greyscale ramp from 10 to 200; input is colour.
+        gray = np.linspace(10, 200, 32 * 32, dtype="uint8").reshape(32, 32)
+        colour = np.zeros((32, 32, 3), dtype="uint8")
+        colour[..., 0] = 255
+        inp = tmp_path / "inp.png"
+        tgt = tmp_path / "tgt.png"
+        Image.fromarray(colour).save(inp)
+        Image.fromarray(gray).save(tgt)
+        loaded_input, loaded_target = load_pair(inp, tgt, MinMax())
+        assert loaded_target.intensity_range == IntensityRange(10.0, 200.0)
+        assert loaded_input.intensity_range == IntensityRange(10.0, 200.0)
+
+    def test_force_gray_after_the_tensor_exists_is_refused(self, tmp_path):
+        arr = np.random.default_rng(17).integers(0, 256, (16, 16, 3), dtype="uint8")
+        p = tmp_path / "c.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p)
+        _ = loader.tensor
+        with pytest.raises(RuntimeError, match="before"):
+            loader.force_gray()
+
+    def test_force_gray_on_a_mask_loader_is_refused(self, tmp_path):
+        arr = np.zeros((16, 16, 3), dtype="uint8")
+        arr[4:8, 4:8] = 255
+        p = tmp_path / "mask.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p, Mask())
+        with pytest.raises(RuntimeError, match="masks"):
+            loader.force_gray()
+
+    def test_force_gray_after_intensity_range_is_refused(self, tmp_path):
+        arr = np.random.default_rng(18).integers(0, 256, (16, 16, 3), dtype="uint8")
+        p = tmp_path / "d.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p)
+        _ = loader.intensity_range
+        with pytest.raises(RuntimeError, match="before"):
+            loader.force_gray()
+
+    def test_colour_target_range_comes_from_its_luma(self, tmp_path):
+        # Target is colour, input greyscale: the target's range must be read
+        # from its luma, not from its widest channel.
+        colour = np.zeros((32, 32, 3), dtype="uint8")
+        colour[..., 0] = 255   # red 255, green 0, blue 0 -> luma about 76
+        gray = np.full((32, 32), 40, dtype="uint8")
+        inp = tmp_path / "inp.png"
+        tgt = tmp_path / "tgt.png"
+        Image.fromarray(gray).save(inp)
+        Image.fromarray(colour).save(tgt)
+        loaded_input, loaded_target = load_pair(inp, tgt, MinMax())
+        assert loaded_input.channels == 1 and loaded_target.channels == 1
+        # A constant luma image: lo == hi, and both sit at the luma value, not at 0/255.
+        rng = loaded_target.intensity_range
+        assert rng is not None
+        assert rng.lo == rng.hi
+        assert 70.0 <= rng.lo <= 82.0

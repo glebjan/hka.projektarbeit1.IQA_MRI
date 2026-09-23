@@ -19,7 +19,9 @@ import torch
 from PIL import Image
 
 from iqaevaluator.metric_spec import Spacing
-from iqaevaluator.normalization import FixedRange, IntensityRange, MinMax, Normalizer
+from iqaevaluator.normalization import (
+    FixedRange, IntensityRange, Mask, MinMax, Normalizer, Raw,
+)
 
 
 @dataclass(frozen=True)
@@ -27,10 +29,13 @@ class LoadedImage:
     """A decoded image plus the geometry the decoder knew about.
 
     Attributes:
-        raw:           (D, H, W) array in the dtype the decoder produced —
-                       uint8 for PNG/JPEG, float32 for DICOM (slope/intercept
-                       applied), the file's own dtype for NIfTI and
-                       SimpleITK formats, so an integer label map stays integer.
+        raw:           (D, H, W), or (D, H, W, 3) for a colour PNG/JPEG. The
+                       dtype is the decoder's — uint8 for PNG/JPEG, float32
+                       for DICOM (slope/intercept applied), the file's own
+                       dtype for NIfTI and SimpleITK formats, so an integer
+                       label map stays integer. Only the PIL decoder ever
+                       produces a channel axis; the medical formats stay
+                       single-channel.
         spacing:       physical voxel size in millimetres, ordered to match the
                        array's axes: (d_depth, d_height, d_width) for (D, H, W).
                        The names are array axes, not anatomical ones — for a
@@ -52,9 +57,57 @@ class LoadedImage:
 # Format-specific loaders
 # ---------------------------------------------------------------------------
 
+# PIL's own ITU-R 601-2 weights, so the same picture stored as RGB and as
+# greyscale yields the same numbers.
+_LUMA_WEIGHTS = (0.299, 0.587, 0.114)
+
+# Modes PIL already stores as one channel. "LA"/"La" are greyscale-with-alpha:
+# convert("L") drops the alpha channel exactly as it would for any other
+# mode here, so these files score the same as the same picture without an
+# alpha channel. Everything else is treated as colour and normalized to RGB,
+# so only two cases can leave this decoder.
+_SINGLE_CHANNEL_MODES = frozenset({"1", "L", "I", "I;16", "I;16B", "F", "LA", "La"})
+
+_PIL_SUFFIXES = frozenset({".png", ".jpg", ".jpeg"})
+
+
 def _load_pil(path: Path) -> LoadedImage:
-    grayscale = np.asarray(Image.open(path).convert("L"))
-    return LoadedImage(grayscale[np.newaxis])
+    image = Image.open(path)
+    if image.mode in _SINGLE_CHANNEL_MODES:
+        return LoadedImage(np.asarray(image.convert("L"))[np.newaxis])
+    return LoadedImage(np.asarray(image.convert("RGB"))[np.newaxis])
+
+
+def to_luma(raw: np.ndarray) -> np.ndarray:
+    """(D, H, W, 3) -> (D, H, W) float32; a (D, H, W) array passes through.
+
+    The weights are PIL's, so a colour file and the same picture stored as
+    greyscale produce the same intensities (up to PIL's truncation).
+    """
+    if raw.ndim == 3:
+        return raw
+    weights = np.asarray(_LUMA_WEIGHTS, dtype=np.float32)
+    return (raw.astype(np.float32) * weights).sum(axis=-1)
+
+
+def collapse_identical_channels(raw: np.ndarray, *, source: str) -> np.ndarray:
+    """(D, H, W, 3) -> (D, H, W) when all channels agree; raise otherwise.
+
+    A greyscale mask stored as RGB is common and harmless. A genuinely
+    coloured label map is not: mixing its channels would invent labels that
+    were never there, and the segmentation metrics would report plausible
+    but wrong numbers.
+    """
+    if raw.ndim == 3:
+        return raw
+    first = raw[..., :1]
+    if not np.array_equal(raw, np.broadcast_to(first, raw.shape)):
+        raise ValueError(
+            f"[{source}] this is a colour image, and a mask or instance map must "
+            "be unambiguous. Supply it as a single-channel file (a 0/1 or 0/255 "
+            "mask, or an integer label map) instead of a coloured rendering."
+        )
+    return raw[..., 0]
 
 
 def _dicom_array_to_depth_first(pixel_array: np.ndarray, photometric: str) -> np.ndarray:
@@ -132,6 +185,13 @@ def _load_nifti(path: Path) -> LoadedImage:
 
 def _load_sitk(path: Path) -> LoadedImage:
     image = sitk.ReadImage(str(path))
+    components = image.GetNumberOfComponentsPerPixel()
+    if components > 1:
+        raise ValueError(
+            f"[{path.name}] this file holds {components} components per pixel. "
+            "Colour/vector images are supported for PNG and JPEG only; extract "
+            "the component you want to score."
+        )
     volume = sitk.GetArrayFromImage(image)
     raw_spacing = image.GetSpacing()  # (x, y, z) — the reverse of the array's axes
     spacing: Optional[Spacing] = None
@@ -226,9 +286,11 @@ class ImageLoader:
             raise ValueError(f"Unsupported format: {path}")
         self.normalizer = normalizer
         self._loaded: Optional[LoadedImage] = None
+        self._raw: Optional[np.ndarray] = None
         self._tensor: Optional[torch.Tensor] = None
         self._intensity_range: Optional[IntensityRange] = None
         self._intensity_range_known = False
+        self._force_gray = False
 
     @property
     def _image(self) -> LoadedImage:
@@ -238,8 +300,36 @@ class ImageLoader:
 
     @property
     def raw(self) -> np.ndarray:
-        """The decoded (D, H, W) array, dtype as the file stored it."""
-        return self._image.raw
+        """The decoded array: (D, H, W), or (D, H, W, 3) for a colour file."""
+        if self._raw is None:
+            raw = self._image.raw
+            # Backstop for decoders: `_load_sitk` already rejects vector
+            # images at the source, and DICOM/NIfTI never produce a channel
+            # axis, so no real file reaches this branch today. Kept in case a
+            # future or misbehaving decoder returns one anyway.
+            if raw.ndim == 4 and self.suffix not in _PIL_SUFFIXES:
+                raise ValueError(
+                    f"[{self.path.name}] this format must decode to a single channel, "
+                    f"but the decoder returned {raw.shape[-1]} of them. Colour is "
+                    "supported for PNG and JPEG only; convert the file or extract "
+                    "the component you want to score."
+                )
+            # Mask collapse runs before the forced luma so a genuinely
+            # coloured mask is always refused, even if the normalizer were
+            # changed to Mask()/Raw() after force_gray() was called. Once
+            # collapsed, the array is (D, H, W), so the luma step below is a
+            # no-op for it (to_luma passes ndim == 3 through unchanged).
+            if isinstance(self.normalizer, (Mask, Raw)):
+                raw = collapse_identical_channels(raw, source=self.path.name)
+            if raw.ndim == 4 and self._force_gray:
+                raw = to_luma(raw)
+            self._raw = raw
+        return self._raw
+
+    @property
+    def channels(self) -> int:
+        """1 for a greyscale image, 3 for a colour one."""
+        return 1 if self.raw.ndim == 3 else 3
 
     @property
     def raw_range(self) -> IntensityRange:
@@ -256,10 +346,18 @@ class ImageLoader:
 
     @property
     def tensor(self) -> torch.Tensor:
-        """(D, 1, H, W). float32 in [0, 1] under every strategy except `Raw()`
-        (dtype preserved, unscaled); exactly {0.0, 1.0} under `Mask()`."""
+        """(D, C, H, W) with C in {1, 3}. float32 in [0, 1] under every strategy
+        except `Raw()` (dtype preserved, unscaled); exactly {0.0, 1.0} under
+        `Mask()`. Colour files keep their three channels — what a metric does
+        with them is decided by `MetricSpec.channels` and by the metric itself.
+        The returned tensor may share storage with this loader's cache (as do
+        `.rgb_tensor` and `.gray_tensor`, which are derived from it) — callers
+        must not mutate it in place."""
         if self._tensor is None:
-            self._tensor = self.normalizer.apply(self.raw, source=self.path.name).unsqueeze(1)
+            scaled = self.normalizer.apply(self.raw, source=self.path.name)
+            self._tensor = (
+                scaled.unsqueeze(1) if scaled.ndim == 3 else scaled.permute(0, 3, 1, 2)
+            )
         return self._tensor
 
     @property
@@ -274,7 +372,28 @@ class ImageLoader:
 
     @property
     def rgb_tensor(self) -> torch.Tensor:
-        return self.tensor.expand(-1, 3, -1, -1)
+        """(D, 3, H, W) — colour as it is, greyscale replicated three times."""
+        tensor = self.tensor
+        return tensor if tensor.shape[1] == 3 else tensor.expand(-1, 3, -1, -1)
+
+    @property
+    def gray_tensor(self) -> torch.Tensor:
+        """(D, 1, H, W) — colour reduced to luma, greyscale as it is.
+
+        The reduction happens on `.tensor`, i.e. after scaling, not on `.raw`
+        before it. Because the luma weights sum to one, this is equivalent to
+        reducing first and then scaling — the intensity range still comes
+        from the whole colour image, exactly as `.tensor` documents. One
+        exception: `scale()` clips to [0, 1] before this property runs, so a
+        channel that was clipped shifts the resulting luma slightly, same as
+        it would shift any other per-channel computation on `.tensor`."""
+        tensor = self.tensor
+        if tensor.shape[1] == 1:
+            return tensor
+        weights = torch.tensor(
+            _LUMA_WEIGHTS, dtype=tensor.dtype, device=tensor.device
+        ).view(1, 3, 1, 1)
+        return (tensor * weights).sum(dim=1, keepdim=True)
 
     @property
     def empty_slice_mask(self) -> torch.Tensor:
@@ -282,13 +401,35 @@ class ImageLoader:
 
         Intensity strategies use `normalization.sparse_slices` (a spread/lift
         heuristic on the raw data); `Mask()` counts foreground voxels exactly.
+        Colour is reduced to luma first, so the heuristic keeps the thresholds
+        it was calibrated with.
         """
-        return self.normalizer.empty_slices(self.raw)
+        return self.normalizer.empty_slices(to_luma(self.raw))
 
     def log_tensor_shape(self) -> torch.Size:
         shape = self.tensor.shape
         print(f"[{self.path.name}] tensor size: {tuple(shape)}")
         return shape
+
+    def force_gray(self) -> None:
+        """Compare this image on luma, whatever the file holds.
+
+        Used by `load_pair` when only one side of a pair carries colour. Must
+        run before anything is derived from the raw data, because the range
+        and the tensor would otherwise be built from the colour version.
+        """
+        if isinstance(self.normalizer, (Mask, Raw)):
+            raise RuntimeError(
+                "force_gray() is not valid for masks or instance maps: mixing "
+                "their channels would invent labels. Supply a single-channel file."
+            )
+        if self._tensor is not None or self._intensity_range_known:
+            raise RuntimeError(
+                "force_gray() must be called before the tensor or the intensity "
+                "range is built"
+            )
+        self._force_gray = True
+        self._raw = None
 
 
 def load_pair(
@@ -309,9 +450,27 @@ def load_pair(
     loaded with `normalizer` itself, independently — a 0/1 prediction against
     a 0/255 reference binarizes to the same tensor.
 
+    When only one side carries colour, both are compared on luma: the usual
+    cause is a format difference (the same greys stored as RGB), not a colour
+    error, and replicating the greyscale side instead would score JPEG's
+    channel drift as a colour deviation. The switch happens before any
+    scaling, so the target's range is read from the same numbers that are
+    compared later.
+
     Returns `(input, target)`.
     """
+    input_image = ImageLoader(input_path, normalizer)
     target = ImageLoader(target_path, normalizer)
+
+    if input_image.channels != target.channels:
+        print(
+            f"[{input_path.name} vs {target_path.name}] one image is colour and the "
+            "other greyscale — both are compared on luma (one channel)."
+        )
+        input_image.force_gray()
+        target.force_gray()
+
     rng = target.intensity_range
-    input_normalizer = normalizer if rng is None else FixedRange(rng, name=normalizer.name)
-    return ImageLoader(input_path, input_normalizer), target
+    if rng is not None:
+        input_image.normalizer = FixedRange(rng, name=normalizer.name)
+    return input_image, target

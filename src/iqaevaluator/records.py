@@ -28,6 +28,10 @@ class ImageEvaluatorRecord:
     scale_hi:            Optional[float] = None
     input_min:           Optional[float] = None
     input_max:           Optional[float] = None
+    # How many channels the scored image held after pairing: 1 or 3. It says
+    # what was available, not what a single metric did with it — `channels`
+    # in MetricSpec decides that per metric.
+    channels:            Optional[int]   = None
     # Full-reference metrics (None when no target is available)
     psnr:                Optional[float] = None
     ssim:                Optional[float] = None
