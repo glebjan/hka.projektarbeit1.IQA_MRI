@@ -45,9 +45,10 @@ class Normalizer(Protocol):
     """One strategy for turning a decoded array into the tensor metrics see.
 
     `range_of` says what [0, 1] stands for (None when nothing is scaled),
-    `apply` produces the `(D, H, W)` tensor, `empty_slices` says which slices
-    carry nothing worth scoring. `name` ends up in the report. `source` is
-    the file name, used only in messages.
+    `apply` produces a tensor of the same shape it was handed — `(D, H, W)`
+    for a greyscale image, `(D, H, W, 3)` for a colour one — `empty_slices`
+    says which slices carry nothing worth scoring. `name` ends up in the
+    report. `source` is the file name, used only in messages.
     """
     name: str
 
