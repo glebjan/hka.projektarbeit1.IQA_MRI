@@ -61,9 +61,12 @@ class LoadedImage:
 # greyscale yields the same numbers.
 _LUMA_WEIGHTS = (0.299, 0.587, 0.114)
 
-# Modes PIL already stores as one channel. Everything else is treated as
-# colour and normalized to RGB, so only two cases can leave this decoder.
-_SINGLE_CHANNEL_MODES = frozenset({"1", "L", "I", "I;16", "I;16B", "F"})
+# Modes PIL already stores as one channel. "LA"/"La" are greyscale-with-alpha:
+# convert("L") drops the alpha channel exactly as it would for any other
+# mode here, so these files score the same as the same picture without an
+# alpha channel. Everything else is treated as colour and normalized to RGB,
+# so only two cases can leave this decoder.
+_SINGLE_CHANNEL_MODES = frozenset({"1", "L", "I", "I;16", "I;16B", "F", "LA", "La"})
 
 _PIL_SUFFIXES = frozenset({".png", ".jpg", ".jpeg"})
 
@@ -182,6 +185,13 @@ def _load_nifti(path: Path) -> LoadedImage:
 
 def _load_sitk(path: Path) -> LoadedImage:
     image = sitk.ReadImage(str(path))
+    components = image.GetNumberOfComponentsPerPixel()
+    if components > 1:
+        raise ValueError(
+            f"[{path.name}] this file holds {components} components per pixel. "
+            "Colour/vector images are supported for PNG and JPEG only; extract "
+            "the component you want to score."
+        )
     volume = sitk.GetArrayFromImage(image)
     raw_spacing = image.GetSpacing()  # (x, y, z) — the reverse of the array's axes
     spacing: Optional[Spacing] = None
@@ -293,6 +303,10 @@ class ImageLoader:
         """The decoded array: (D, H, W), or (D, H, W, 3) for a colour file."""
         if self._raw is None:
             raw = self._image.raw
+            # Backstop for decoders: `_load_sitk` already rejects vector
+            # images at the source, and DICOM/NIfTI never produce a channel
+            # axis, so no real file reaches this branch today. Kept in case a
+            # future or misbehaving decoder returns one anyway.
             if raw.ndim == 4 and self.suffix not in _PIL_SUFFIXES:
                 raise ValueError(
                     f"[{self.path.name}] this format must decode to a single channel, "
@@ -300,10 +314,15 @@ class ImageLoader:
                     "supported for PNG and JPEG only; convert the file or extract "
                     "the component you want to score."
                 )
-            if raw.ndim == 4 and self._force_gray:
-                raw = to_luma(raw)
+            # Mask collapse runs before the forced luma so a genuinely
+            # coloured mask is always refused, even if the normalizer were
+            # changed to Mask()/Raw() after force_gray() was called. Once
+            # collapsed, the array is (D, H, W), so the luma step below is a
+            # no-op for it (to_luma passes ndim == 3 through unchanged).
             if isinstance(self.normalizer, (Mask, Raw)):
                 raw = collapse_identical_channels(raw, source=self.path.name)
+            if raw.ndim == 4 and self._force_gray:
+                raw = to_luma(raw)
             self._raw = raw
         return self._raw
 

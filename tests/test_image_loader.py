@@ -51,6 +51,16 @@ class TestLoadPil:
         # Colour PNGs now carry their channel axis through — see TestColourDecoding.
         assert t.shape == (1, 3, 32, 32)
 
+    def test_greyscale_with_alpha_is_single_channel(self, tmp_path):
+        arr = np.random.default_rng(2).integers(0, 256, (32, 32), dtype="uint8")
+        la_path = tmp_path / "la.png"
+        l_path = tmp_path / "l.png"
+        Image.fromarray(arr).convert("LA").save(la_path)
+        Image.fromarray(arr).convert("L").save(l_path)
+        la_loader = ImageLoader(la_path)
+        assert la_loader.channels == 1
+        assert torch.equal(la_loader.tensor, ImageLoader(l_path).tensor)
+
 
 # ---------------------------------------------------------------------------
 # _dicom_array_to_depth_first
@@ -201,6 +211,28 @@ class TestLoadSitk:
         sitk.WriteImage(itk_img, str(p))
         t = ImageLoader(p).tensor
         assert t.shape == (1, 1, 64, 64)
+
+    def test_2d_vector_mha_is_rejected(self, tmp_path):
+        # A real 2-D colour image, e.g. (32, 40, 3), decodes via SimpleITK as
+        # a vector image whose components must not be silently read as 32
+        # slices 3 px wide.
+        arr = np.random.default_rng(2).random((32, 40, 3)).astype(np.float32)
+        itk_img = sitk.GetImageFromArray(arr, isVector=True)
+        p = tmp_path / "vector_slice.mha"
+        sitk.WriteImage(itk_img, str(p))
+        with pytest.raises(ValueError, match="components"):
+            _ = ImageLoader(p).raw
+
+    def test_3d_vector_nrrd_is_rejected_with_the_components_message(self, tmp_path):
+        # A 3-D vector image must raise the new "components" message, not the
+        # older "Unsupported SimpleITK array shape" one.
+        arr = np.random.default_rng(3).random((10, 64, 64, 3)).astype(np.float32)
+        itk_img = sitk.GetImageFromArray(arr, isVector=True)
+        p = tmp_path / "vector_vol.nrrd"
+        sitk.WriteImage(itk_img, str(p))
+        with pytest.raises(ValueError, match="components") as excinfo:
+            _ = ImageLoader(p).raw
+        assert "Unsupported SimpleITK array shape" not in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -747,6 +779,24 @@ class TestPairChannelHarmonisation:
         Image.fromarray(arr).save(p)
         loader = ImageLoader(p)
         _ = loader.tensor
+        with pytest.raises(RuntimeError, match="before"):
+            loader.force_gray()
+
+    def test_force_gray_on_a_mask_loader_is_refused(self, tmp_path):
+        arr = np.zeros((16, 16, 3), dtype="uint8")
+        arr[4:8, 4:8] = 255
+        p = tmp_path / "mask.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p, Mask())
+        with pytest.raises(RuntimeError, match="masks"):
+            loader.force_gray()
+
+    def test_force_gray_after_intensity_range_is_refused(self, tmp_path):
+        arr = np.random.default_rng(18).integers(0, 256, (16, 16, 3), dtype="uint8")
+        p = tmp_path / "d.png"
+        Image.fromarray(arr).save(p)
+        loader = ImageLoader(p)
+        _ = loader.intensity_range
         with pytest.raises(RuntimeError, match="before"):
             loader.force_gray()
 
