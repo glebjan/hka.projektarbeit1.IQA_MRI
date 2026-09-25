@@ -111,4 +111,4 @@ The metrics come from [pyiqa](https://github.com/chaofengc/IQA-PyTorch), [MONAI]
 
 ## License
 
-MIT, as declared in `pyproject.toml`.
+MIT
