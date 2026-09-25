@@ -6,72 +6,82 @@ Full documentation lives in the [project wiki](https://github.com/glebjan/hka.pr
 
 ## Metrics
 
-The framework bundles 30 metrics in four families. Expand a family to see its metrics, backends and papers. The [Metric Catalog](https://github.com/glebjan/hka.projektarbeit1.IQA_MRI/wiki/Metric-Catalog) explains each metric in detail.
+The framework bundles 30 metrics in four families. Pick the family by what you have and what you want to know.
 
-| Family | Needs reference | Metrics |
-|---|---|---|
-| Signal-based full-reference | Yes | `psnr`, `ssim`, `fsim`, `gmsd`, `vsi` |
-| Learning-based full-reference | Yes | `lpips`, `dists`, `radimagenet_lpips`, `dreamsim` |
-| No-reference | No | `clipiqa`, `clip_iqa_lung`, `clip_iqa_brain`, `brisque`, `niqe`, `ilniqe`, `piqe`, `musiq`, `maniqa`, `paq2piq` |
-| Segmentation | Yes | `dice`, `hausdorff95`, `nsd`, `assd`, `panoptic_quality`, `boundary_iou`, `vs`, `vs_signed`, `v_pred`, `v_gt`, `tp` |
+| Family | Needs reference | Use it when | Metrics |
+|---|---|---|---|
+| Signal-based full-reference | Yes | You have a ground truth and want to check pixel fidelity and local structure. Fast and easy to interpret. | `psnr`, `ssim`, `fsim`, `gmsd`, `vsi` |
+| Learning-based full-reference | Yes | You have a ground truth and care about perceived similarity rather than exact pixels. | `lpips`, `dists`, `radimagenet_lpips`, `dreamsim` |
+| No-reference | No | There is no ground truth, for example for purely generated images. | `clipiqa`, `clip_iqa_lung`, `clip_iqa_brain`, `brisque`, `niqe`, `ilniqe`, `piqe`, `musiq`, `maniqa`, `paq2piq` |
+| Segmentation | Yes (reference mask) | You want to know if an image still works for a downstream task such as organ segmentation. | `dice`, `hausdorff95`, `nsd`, `assd`, `panoptic_quality`, `boundary_iou`, `vs`, `vs_signed`, `v_pred`, `v_gt`, `tp` |
+
+A few rules of thumb help with the choice.
+
+1. With a reference, combine one signal-based metric (e.g. `ssim`) with one learned metric (e.g. `lpips`). They catch different errors.
+2. Most learned and no-reference metrics were trained on natural photos. Use them to rank models within one study, not as absolute quality values.
+3. For medical images, `radimagenet_lpips` uses features learned on CT, MRI and ultrasound. `clip_iqa_lung` and `clip_iqa_brain` use organ-specific prompts.
+4. Only `psnr`, `ssim` and the segmentation metrics can score a whole 3D volume at once. All others score slice by slice.
+5. `maniqa` and `ilniqe` are much slower than the rest. Leave them out for quick runs.
+
+Expand a family to see what each metric captures. The [Metric Catalog](https://github.com/glebjan/hka.projektarbeit1.IQA_MRI/wiki/Metric-Catalog) and [Selecting Metrics](https://github.com/glebjan/hka.projektarbeit1.IQA_MRI/wiki/Selecting-Metrics) in the wiki go into detail.
 
 <details>
 <summary>Signal-based full-reference metrics</summary>
 
-| Name | Metric | Better | Backend | Paper |
+| Name | Captures | Better | Backend | Paper |
 |---|---|---|---|---|
-| `psnr` | Peak Signal-to-Noise Ratio | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch), [MONAI](https://github.com/Project-MONAI/MONAI) | [Wang and Bovik 2009](https://doi.org/10.1109/MSP.2008.930649) |
-| `ssim` | Structural Similarity Index Measure | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch), [MONAI](https://github.com/Project-MONAI/MONAI) | [Wang et al. 2004](https://doi.org/10.1109/TIP.2003.819861) |
-| `fsim` | Feature Similarity Index Measure | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Zhang et al. 2011](https://doi.org/10.1109/TIP.2011.2109730) |
-| `gmsd` | Gradient Magnitude Similarity Deviation | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Xue et al. 2014](https://doi.org/10.1109/TIP.2013.2293423) |
-| `vsi` | Visual Saliency Induced Index | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Zhang, Shen and Li 2014](https://doi.org/10.1109/TIP.2014.2346028) |
+| `psnr` | Pixel-wise error. A simple baseline that ignores structure. | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch), [MONAI](https://github.com/Project-MONAI/MONAI) | [Wang and Bovik 2009](https://doi.org/10.1109/MSP.2008.930649) |
+| `ssim` | Local luminance, contrast and structure. | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch), [MONAI](https://github.com/Project-MONAI/MONAI) | [Wang et al. 2004](https://doi.org/10.1109/TIP.2003.819861) |
+| `fsim` | Edges and other salient structures. | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Zhang et al. 2011](https://doi.org/10.1109/TIP.2011.2109730) |
+| `gmsd` | Distortions of image gradients. | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Xue et al. 2014](https://doi.org/10.1109/TIP.2013.2293423) |
+| `vsi` | Errors in visually salient regions. | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Zhang, Shen and Li 2014](https://doi.org/10.1109/TIP.2014.2346028) |
 
 </details>
 
 <details>
 <summary>Learning-based full-reference metrics</summary>
 
-| Name | Metric | Better | Backend | Paper |
+| Name | Captures | Better | Backend | Paper |
 |---|---|---|---|---|
-| `lpips` | Learned Perceptual Image Patch Similarity | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Zhang et al. 2018](https://doi.org/10.1109/CVPR.2018.00068) |
-| `dists` | Deep Image Structure and Texture Similarity | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Ding et al. 2022](https://doi.org/10.1109/TPAMI.2020.3045810) |
-| `radimagenet_lpips` | LPIPS with a medical ResNet50 backbone | lower | pyiqa plugin, [RadImageNet](https://github.com/BMEII-AI/RadImageNet) weights | [Mei et al. 2022](https://doi.org/10.1148/ryai.210315) |
-| `dreamsim` | DreamSim perceptual distance | lower | [DreamSim](https://github.com/ssundaram21/dreamsim) | [Fu et al. 2023](https://proceedings.neurips.cc/paper_files/paper/2023/hash/9f09f316a3eaf59d9ced5ffaefe97e0f-Abstract-Conference.html) |
+| `lpips` | Perceived difference in the features of a photo-trained network. | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Zhang et al. 2018](https://doi.org/10.1109/CVPR.2018.00068) |
+| `dists` | Structure and texture. Tolerates slightly shifted texture. | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Ding et al. 2022](https://doi.org/10.1109/TPAMI.2020.3045810) |
+| `radimagenet_lpips` | Like `lpips`, but with features learned on medical images. | lower | pyiqa plugin, [RadImageNet](https://github.com/BMEII-AI/RadImageNet) weights | [Mei et al. 2022](https://doi.org/10.1148/ryai.210315) |
+| `dreamsim` | Layout and shape. Ignores fine noise and texture. | lower | [DreamSim](https://github.com/ssundaram21/dreamsim) | [Fu et al. 2023](https://proceedings.neurips.cc/paper_files/paper/2023/hash/9f09f316a3eaf59d9ced5ffaefe97e0f-Abstract-Conference.html) |
 
 </details>
 
 <details>
 <summary>No-reference metrics</summary>
 
-| Name | Metric | Better | Backend | Paper |
+| Name | Captures | Better | Backend | Paper |
 |---|---|---|---|---|
-| `clipiqa` | CLIP Image Quality Assessment | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch), [CLIP](https://github.com/openai/CLIP) | [Wang, Chan and Loy 2023](https://doi.org/10.1609/aaai.v37i2.25353) |
-| `clip_iqa_lung` | CLIP-IQA with lung prompts | higher | pyiqa plugin, [CLIP](https://github.com/openai/CLIP) | [Wang, Chan and Loy 2023](https://doi.org/10.1609/aaai.v37i2.25353) |
-| `clip_iqa_brain` | CLIP-IQA with brain prompts | higher | pyiqa plugin, [CLIP](https://github.com/openai/CLIP) | [Wang, Chan and Loy 2023](https://doi.org/10.1609/aaai.v37i2.25353) |
-| `brisque` | Blind/Referenceless Image Spatial Quality Evaluator | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Mittal, Moorthy and Bovik 2012](https://doi.org/10.1109/TIP.2012.2214050) |
-| `niqe` | Natural Image Quality Evaluator | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Mittal, Soundararajan and Bovik 2013](https://doi.org/10.1109/LSP.2012.2227726) |
-| `ilniqe` | Integrated Local NIQE | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Zhang, Zhang and Bovik 2015](https://doi.org/10.1109/TIP.2015.2426416) |
-| `piqe` | Perception-based Image Quality Evaluator | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Venkatanath et al. 2015](https://doi.org/10.1109/NCC.2015.7084843) |
-| `musiq` | Multi-scale Image Quality Transformer | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Ke et al. 2021](https://doi.org/10.1109/ICCV48922.2021.00510) |
-| `maniqa` | Multi-dimension Attention Network for IQA | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Yang et al. 2022](https://doi.org/10.1109/CVPRW56347.2022.00126) |
-| `paq2piq` | PaQ-2-PiQ | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Ying et al. 2020](https://doi.org/10.1109/CVPR42600.2020.00363) |
+| `clipiqa` | A generic "good or bad image" judgement by CLIP. | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch), [CLIP](https://github.com/openai/CLIP) | [Wang, Chan and Loy 2023](https://doi.org/10.1609/aaai.v37i2.25353) |
+| `clip_iqa_lung` | Sharpness, noise, contrast and artefacts in lung scans. | higher | pyiqa plugin, [CLIP](https://github.com/openai/CLIP) | [Wang, Chan and Loy 2023](https://doi.org/10.1609/aaai.v37i2.25353) |
+| `clip_iqa_brain` | Sharpness, noise, contrast and artefacts in brain scans. | higher | pyiqa plugin, [CLIP](https://github.com/openai/CLIP) | [Wang, Chan and Loy 2023](https://doi.org/10.1609/aaai.v37i2.25353) |
+| `brisque` | Deviation from natural image statistics. | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Mittal, Moorthy and Bovik 2012](https://doi.org/10.1109/TIP.2012.2214050) |
+| `niqe` | Distance to a model of undistorted images. Needs no training ratings. | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Mittal, Soundararajan and Bovik 2013](https://doi.org/10.1109/LSP.2012.2227726) |
+| `ilniqe` | Like `niqe`, but patch by patch. Slow. | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Zhang, Zhang and Bovik 2015](https://doi.org/10.1109/TIP.2015.2426416) |
+| `piqe` | Distortion in detailed image blocks. | lower | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Venkatanath et al. 2015](https://doi.org/10.1109/NCC.2015.7084843) |
+| `musiq` | Overall perceived quality at native resolution. | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Ke et al. 2021](https://doi.org/10.1109/ICCV48922.2021.00510) |
+| `maniqa` | Artefacts typical of GAN-restored images. Slowest metric. | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Yang et al. 2022](https://doi.org/10.1109/CVPRW56347.2022.00126) |
+| `paq2piq` | Global and local quality of real photos. | higher | [pyiqa](https://github.com/chaofengc/IQA-PyTorch) | [Ying et al. 2020](https://doi.org/10.1109/CVPR42600.2020.00363) |
 
 </details>
 
 <details>
 <summary>Segmentation metrics</summary>
 
-| Name | Metric | Better | Backend | Paper |
+| Name | Captures | Better | Backend | Paper |
 |---|---|---|---|---|
-| `dice` | Dice Similarity Coefficient | higher | [MONAI](https://github.com/Project-MONAI/MONAI) | [Maier-Hein et al. 2024](https://doi.org/10.1038/s41592-023-02151-z) |
-| `hausdorff95` | 95th Percentile Hausdorff Distance | lower | [MONAI](https://github.com/Project-MONAI/MONAI) | [Maier-Hein et al. 2024](https://doi.org/10.1038/s41592-023-02151-z) |
-| `nsd` | Normalized Surface Dice | higher | [MONAI](https://github.com/Project-MONAI/MONAI) | [Nikolov et al. 2021](https://doi.org/10.2196/26151) |
-| `assd` | Average Symmetric Surface Distance | lower | [MONAI](https://github.com/Project-MONAI/MONAI) | [Maier-Hein et al. 2024](https://doi.org/10.1038/s41592-023-02151-z) |
-| `panoptic_quality` | Panoptic Quality | higher | [MONAI](https://github.com/Project-MONAI/MONAI) | [Kirillov et al. 2019](https://doi.org/10.1109/CVPR.2019.00963) |
-| `boundary_iou` | Boundary Intersection over Union | higher | Own implementation | [Cheng et al. 2021](https://doi.org/10.1109/CVPR46437.2021.01508) |
-| `vs` | Volumetric Similarity | higher | Own implementation | [Taha and Hanbury 2015](https://doi.org/10.1186/s12880-015-0068-x) |
-| `vs_signed` | Signed Volumetric Similarity | not ranked | Own implementation | [Taha and Hanbury 2015](https://doi.org/10.1186/s12880-015-0068-x) |
-| `v_pred`, `v_gt`, `tp` | Voxel counts of prediction, reference and overlap | not ranked | Own implementation | |
+| `dice` | Overlap of the two masks. The standard choice. | higher | [MONAI](https://github.com/Project-MONAI/MONAI) | [Maier-Hein et al. 2024](https://doi.org/10.1038/s41592-023-02151-z) |
+| `hausdorff95` | Near worst-case boundary distance, robust to single outliers. | lower | [MONAI](https://github.com/Project-MONAI/MONAI) | [Maier-Hein et al. 2024](https://doi.org/10.1038/s41592-023-02151-z) |
+| `nsd` | Share of the boundary within a tolerance. | higher | [MONAI](https://github.com/Project-MONAI/MONAI) | [Nikolov et al. 2021](https://doi.org/10.2196/26151) |
+| `assd` | Average boundary distance. | lower | [MONAI](https://github.com/Project-MONAI/MONAI) | [Maier-Hein et al. 2024](https://doi.org/10.1038/s41592-023-02151-z) |
+| `panoptic_quality` | Detection and overlap of individual instances. | higher | [MONAI](https://github.com/Project-MONAI/MONAI) | [Kirillov et al. 2019](https://doi.org/10.1109/CVPR.2019.00963) |
+| `boundary_iou` | Overlap along the contour. Fair to small and large objects. | higher | Own implementation | [Cheng et al. 2021](https://doi.org/10.1109/CVPR46437.2021.01508) |
+| `vs` | Size agreement only. Read together with `dice`. | higher | Own implementation | [Taha and Hanbury 2015](https://doi.org/10.1186/s12880-015-0068-x) |
+| `vs_signed` | Whether the prediction is too small or too large. | not ranked | Own implementation | [Taha and Hanbury 2015](https://doi.org/10.1186/s12880-015-0068-x) |
+| `v_pred`, `v_gt`, `tp` | Voxel counts for summing slice results into volume scores. | not ranked | Own implementation | |
 
 </details>
 
