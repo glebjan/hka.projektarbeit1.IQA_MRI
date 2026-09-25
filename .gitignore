@@ -1,4 +1,4 @@
-# Track only: src/, tests/, docs/, diagram/, pyproject.toml
+# Track only: src/, tests/, docs/, diagram/, pyproject.toml, README.md
 
 # Ignore everything
 *
@@ -11,6 +11,7 @@
 !tests/
 !tests/**
 !pyproject.toml
+!README.md
 !models/
 !models/**
 
